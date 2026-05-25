@@ -84,6 +84,34 @@ class EpubReaderActivity final : public Activity {
 
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
+  // Pre-rendered next-page buffer (ported from buffer-crosspoint-reader 1.44).
+  // After the current page is fully drawn and displayed, the next text-only
+  // page is silently rendered into the frame buffer behind the user's back —
+  // the next forward page turn then skips the prewarm+page->render pass and
+  // just superimposes the status bar + flushes to the display, saving ~200 ms
+  // per page turn. The framebuffer's last actually-displayed contents stay on
+  // the e-ink panel unchanged, since e-ink retains the previous image and
+  // we never call displayBuffer() during the pre-render pass.
+  struct PreRenderedPage {
+    bool ready = false;
+    int spineIndex = -1;
+    int pageIndex = -1;
+  };
+  PreRenderedPage preRenderedPage;
+  // Set by the tail of render() to request a pre-render pass on the next tick.
+  bool pendingPreRender = false;
+  // Set by pageTurn() when the buffered next page matches the requested page;
+  // tells render() the framebuffer already holds content and only status bar
+  // + display flush are needed.
+  bool usePreRenderedBuffer = false;
+  // Render page content (prewarm + clear + page->render) WITHOUT touching the
+  // status bar or pushing displayBuffer. Used by the pre-render pass.
+  void renderPageContentOnly(const Page& page, int orientedMarginTop, int orientedMarginRight,
+                             int orientedMarginBottom, int orientedMarginLeft);
+  // Superimpose status bar over the already-populated framebuffer, flush via
+  // the refresh cycle, then run the grayscale AA pass for text-only pages.
+  void displayPreRenderedPage(const Page& page, int orientedMarginTop, int orientedMarginRight,
+                              int orientedMarginBottom, int orientedMarginLeft);
   void renderStatusBar() const;
   void silentIndexNextChapterIfNeeded(uint16_t viewportWidth, uint16_t viewportHeight);
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
