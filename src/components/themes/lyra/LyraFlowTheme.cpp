@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -101,7 +102,21 @@ void cutRoundedCorners(GfxRenderer& renderer, int x, int y, int w, int h, int r)
 void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                         int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                         bool& bufferRestored, const std::function<bool()>& storeCoverBuffer,
-                                        const BookReadingStats* stats, float progressPercent) const {
+                                        const BookReadingStats* stats, float progressPercent,
+                                        const std::vector<std::vector<uint8_t>>* thumbDataBuffers) const {
+  // Returns a Bitmap reading from the RAM thumb cache when present, else
+  // falls back to a fresh SD open via `fallbackOpen`. The carousel render
+  // path uses this to dodge a per-render `Storage.openFileForRead` × 5 plus
+  // the sequential row reads — RAM caches make the scroll noticeably snappier.
+  // The lambda is created once per drawRecentBookCover invocation and used
+  // for all 5 cover slots below.
+  auto thumbBufferFor = [thumbDataBuffers](int idx) -> const std::vector<uint8_t>* {
+    if (thumbDataBuffers == nullptr) return nullptr;
+    if (idx < 0 || idx >= static_cast<int>(thumbDataBuffers->size())) return nullptr;
+    const auto& buf = (*thumbDataBuffers)[idx];
+    if (buf.empty()) return nullptr;
+    return &buf;
+  };
   if (recentBooks.empty()) {
     drawEmptyRecents(renderer, rect);
     return;
@@ -161,21 +176,35 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
                               : (isFar ? rightFarX : rightNearX);
     const int drawY = centerY + (centerCoverHeight / 2) - (hMax / 2);
 
-    const std::string coverPath = UITheme::getCoverThumbPath(recentBooks[idx].coverBmpPath, centerCoverHeight);
     bool drawn = false;
-    if (!coverPath.empty()) {
-      FsFile file;
-      if (Storage.openFileForRead("HOME", coverPath, file)) {
-        Bitmap bitmap(file);
-        if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-          // drawPerspectiveBitmap is OR-style (only writes black), so any
-          // white area of the cover would show through to whatever side
-          // cover was drawn beneath us. Pre-clear the bbox to opaque white.
-          renderer.fillRect(drawX, drawY, sideCoverWidth, hMax, false);
-          renderer.drawPerspectiveBitmap(bitmap, drawX, drawY, sideCoverWidth, hL, hR);
-          drawn = true;
+    // Fast path: RAM-cached thumbnail bytes (slurped at home enter). Skips
+    // the SD open + sequential read for the four side covers.
+    if (const std::vector<uint8_t>* memBuf = thumbBufferFor(idx)) {
+      Bitmap bitmap(memBuf->data(), memBuf->size());
+      if (bitmap.parseHeaders() == BmpReaderError::Ok) {
+        renderer.fillRect(drawX, drawY, sideCoverWidth, hMax, false);
+        renderer.drawPerspectiveBitmap(bitmap, drawX, drawY, sideCoverWidth, hL, hR);
+        drawn = true;
+      }
+    }
+    // Slow path: open the BMP from SD. Used until the RAM cache is populated
+    // and as a fallback if a specific thumb didn't fit the cache size cap.
+    if (!drawn) {
+      const std::string coverPath = UITheme::getCoverThumbPath(recentBooks[idx].coverBmpPath, centerCoverHeight);
+      if (!coverPath.empty()) {
+        FsFile file;
+        if (Storage.openFileForRead("HOME", coverPath, file)) {
+          Bitmap bitmap(file);
+          if (bitmap.parseHeaders() == BmpReaderError::Ok) {
+            // drawPerspectiveBitmap is OR-style (only writes black), so any
+            // white area of the cover would show through to whatever side
+            // cover was drawn beneath us. Pre-clear the bbox to opaque white.
+            renderer.fillRect(drawX, drawY, sideCoverWidth, hMax, false);
+            renderer.drawPerspectiveBitmap(bitmap, drawX, drawY, sideCoverWidth, hL, hR);
+            drawn = true;
+          }
+          file.close();
         }
-        file.close();
       }
     }
     if (!drawn) {
@@ -201,6 +230,27 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
     renderer.fillRect(drawX, drawY + topL, verticalEdgeWidth, hL, true);                    // left edge
     renderer.fillRect(rightX - verticalEdgeWidth + 1, drawY + topR, verticalEdgeWidth, hR,  // right edge
                       true);
+    // 2-px white halo just outside the 2-px black trapezoid. The carousel
+    // stacks side covers with overlap (L-near overlays L-far, center overlays
+    // both inner side covers), so neighboring cover pixels meet our outline
+    // directly. A 2-px white ring erases those neighbor pixels along our
+    // outer edge, creating a clean visual gap between cover frames without
+    // having to widen the carousel layout. The halo is drawn AFTER the black
+    // outline so the black is never nibbled by our halo, and it traces the
+    // same slanted-top / slanted-bottom / vertical-sides shape as the black.
+    // drawLine with thickness 2 paints rows y and y+1, so the top of the
+    // halo (above the 2-px-thick top slant) starts at (drawY + topL - 2)
+    // and goes through (drawY + topL - 1); the bottom halo (below the 2-px
+    // bottom slant which sits at botL..botL+1) starts at (drawY + botL + 2)
+    // and goes through (drawY + botL + 3).
+    renderer.drawLine(drawX, drawY + topL - 2, rightX, drawY + topR - 2, 2, false);  // halo above top slant
+    renderer.drawLine(drawX, drawY + botL + 2, rightX, drawY + botR + 2, 2, false);  // halo below bottom slant
+    // Vertical halos extend from the topmost halo row through the bottommost
+    // halo row, so the four halo segments meet cleanly at the trapezoid
+    // corners. Width 2 mirrors the horizontal halos; height = hL/hR + 5
+    // (cover height + 2 above + 2 below + 1 because endpoints are inclusive).
+    renderer.fillRect(drawX - 2, drawY + topL - 2, 2, hL + 5, false);  // halo left of left edge
+    renderer.fillRect(rightX + 1, drawY + topR - 2, 2, hR + 5, false);  // halo right of right edge
     // The bottom slant's perpendicular thickness leaks pixels into the two
     // rows starting just below the bbox bottom (the row at drawY + hMax
     // is part of the visible outline, so we leave it). Wipe rows hMax+1
@@ -224,22 +274,31 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
   //     for narrower covers, e.g. 1720×2600 which is taller than 220:320). ---
   int actualCoverWidth = centerCoverWidth;
   int actualCoverHeight = centerCoverHeight;
-  const std::string cp = UITheme::getCoverThumbPath(recentBooks[curIdx].coverBmpPath, centerCoverHeight);
+  // Center cover: same fast-path / slow-path split as the side covers above.
+  // The Bitmap is heap-allocated so the memory- and file-backed variants can
+  // share the rest of the rendering code below uniformly.
   FsFile cf;
-  const bool centerOpened = !cp.empty() && Storage.openFileForRead("HOME", cp, cf);
-  Bitmap centerBitmap(cf);
-  bool centerParsed = false;
-  if (centerOpened) {
-    if (centerBitmap.parseHeaders() == BmpReaderError::Ok && centerBitmap.getWidth() > 0 &&
-        centerBitmap.getHeight() > 0) {
-      const int srcW = centerBitmap.getWidth();
-      const int srcH = centerBitmap.getHeight();
-      const float fitScale = std::min(static_cast<float>(centerCoverWidth) / static_cast<float>(srcW),
-                                      static_cast<float>(centerCoverHeight) / static_cast<float>(srcH));
-      actualCoverWidth = std::min(centerCoverWidth, static_cast<int>(std::round(srcW * fitScale)));
-      actualCoverHeight = std::min(centerCoverHeight, static_cast<int>(std::round(srcH * fitScale)));
-      centerParsed = true;
+  bool centerOpenedFile = false;
+  std::unique_ptr<Bitmap> centerBitmap;
+  if (const std::vector<uint8_t>* memBuf = thumbBufferFor(curIdx)) {
+    centerBitmap = std::unique_ptr<Bitmap>(new Bitmap(memBuf->data(), memBuf->size()));
+  } else {
+    const std::string cp = UITheme::getCoverThumbPath(recentBooks[curIdx].coverBmpPath, centerCoverHeight);
+    if (!cp.empty() && Storage.openFileForRead("HOME", cp, cf)) {
+      centerOpenedFile = true;
+      centerBitmap = std::unique_ptr<Bitmap>(new Bitmap(cf));
     }
+  }
+  bool centerParsed = false;
+  if (centerBitmap && centerBitmap->parseHeaders() == BmpReaderError::Ok && centerBitmap->getWidth() > 0 &&
+      centerBitmap->getHeight() > 0) {
+    const int srcW = centerBitmap->getWidth();
+    const int srcH = centerBitmap->getHeight();
+    const float fitScale = std::min(static_cast<float>(centerCoverWidth) / static_cast<float>(srcW),
+                                    static_cast<float>(centerCoverHeight) / static_cast<float>(srcH));
+    actualCoverWidth = std::min(centerCoverWidth, static_cast<int>(std::round(srcW * fitScale)));
+    actualCoverHeight = std::min(centerCoverHeight, static_cast<int>(std::round(srcH * fitScale)));
+    centerParsed = true;
   }
 
   const int cX = centerX - actualCoverWidth / 2;
@@ -251,7 +310,7 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
   renderer.fillRect(cX, actualY, actualCoverWidth, actualCoverHeight, false);
 
   if (centerParsed) {
-    renderer.drawBitmap(centerBitmap, cX, actualY, actualCoverWidth, actualCoverHeight);
+    renderer.drawBitmap(*centerBitmap, cX, actualY, actualCoverWidth, actualCoverHeight);
     cutRoundedCorners(renderer, cX, actualY, actualCoverWidth, actualCoverHeight, bookCornerRadius);
   } else {
     // Placeholder: black lower-2/3 with the cover icon, matches reference fallback.
@@ -261,7 +320,7 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
   }
   renderer.drawRoundedRect(cX, actualY, actualCoverWidth, actualCoverHeight, 2, bookCornerRadius, true);
 
-  if (centerOpened) cf.close();
+  if (centerOpenedFile) cf.close();
 
   // Cache positions so the selection-border-only path below can redraw the
   // border on subsequent frames without re-running the SD load above.
@@ -285,7 +344,17 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
   // of the slot dims, so the bar lines up flush with the unselected cover
   // edges — including books whose aspect makes the rendered cover narrower
   // than the 270-px slot.
+  //
+  // Two anchors here on purpose:
+  //   * `progressBarTopY` follows the SLOT bottom; the time-read row + title
+  //     /author block below the cover use this so their vertical rhythm stays
+  //     identical regardless of how tall the rendered cover ends up being.
+  //   * `barDrawY` follows the ACTUAL cover bottom so the bar visually hugs
+  //     the cover even when the cover is shorter than the 392 slot height
+  //     (e.g. 4:3 covers fit-scaled to a narrower rect). For covers that
+  //     fill the slot fully (3:5 aspect) the two anchors are identical.
   const int progressBarTopY = centerY + centerCoverHeight + 8;
+  const int barDrawY = actualY + actualCoverHeight + 8;
   constexpr int progressBarVisualHeight = 3;
   if (progressPercent >= 0.0f) {
     const float clamped = std::clamp(progressPercent, 0.0f, 100.0f);
@@ -296,9 +365,9 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
     // the unfilled track and the thicker filled portion share a horizontal
     // centerline. Visually: the thin line sits halfway through the thick
     // line's height instead of at its bottom edge.
-    renderer.fillRect(barLeftX, progressBarTopY + 1, barW, 1, true);
+    renderer.fillRect(barLeftX, barDrawY + 1, barW, 1, true);
     if (fillW > 0) {
-      renderer.fillRect(barLeftX, progressBarTopY, fillW, progressBarVisualHeight, true);
+      renderer.fillRect(barLeftX, barDrawY, fillW, progressBarVisualHeight, true);
     }
   }
 
@@ -314,11 +383,19 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
   // depend on the user's font setup), so we don't try to extrapolate via
   // global pages/min for the unstarted case — single time is cleaner anyway.
   const int timeReadFontLh = renderer.getLineHeight(SMALL_FONT_ID);
-  // Bring the time row up so the gap between bar bottom and text top matches
-  // the 4-px gap between the unselected cover bottom and the bar top.
-  // drawText's `y` is bbox top but the visible glyph starts ~2 px below it
-  // (top-side leading), so +2 here gives a ~4-px optical gap.
-  const int timeReadY = progressBarTopY + progressBarVisualHeight + 6;
+  // The time row tracks the BAR (cover-anchored) so the bar↔time gap stays
+  // constant regardless of cover aspect ratio. The +4 gap (was +6) matches
+  // the 2-px-thick selection outline that hugs the cover bottom — the outline
+  // visually pulls the bar 2 px closer to the cover edge, so the bar↔time
+  // gap is tightened by the same 2 px to keep the cover/bar/time rhythm
+  // symmetric. The title/author block below stays slot-anchored, so it keeps
+  // its rhythm and gets a little extra breathing room when the cover is
+  // shorter than the 392 slot.
+  const int timeReadY = barDrawY + progressBarVisualHeight + 4;
+  // Slot-anchored sibling used purely for the title/author block's vertical
+  // placement — keeps that block at the same Y for every book regardless of
+  // how tall the rendered cover ends up being.
+  const int slotTimeReadY = progressBarTopY + progressBarVisualHeight + 4;
   {
     const uint32_t elapsedSecs = (stats != nullptr) ? stats->totalReadingSeconds : 0;
     const bool isCompleted = (stats != nullptr && stats->isCompleted);
@@ -355,7 +432,11 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
   // Title + author centered in the leftover vertical room between the time
   // line and the rect bottom (which is laid out to align with the menu strip
   // top — see LyraFlowMetrics::homeCoverTileHeight).
-  const int textAreaTop = timeReadY + timeReadFontLh + 1;
+  // Use the slot-anchored time row Y here, not the cover-anchored one, so
+  // the title/author block lands at a consistent Y for every cover aspect
+  // ratio — the bar and time text may shift upward for shorter covers, but
+  // the title block stays put.
+  const int textAreaTop = slotTimeReadY + timeReadFontLh + 1;
   const int textAreaBottom = rect.y + rect.height;
   const int textAreaHeight = std::max(0, textAreaBottom - textAreaTop);
   const int titleBlockHeight = titleLh + (hasAuthorLine ? (1 + authorLh) : 0);
@@ -382,11 +463,27 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
   coverRendered = coverBufferStored;
   }  // end of `if (!coverRendered)` gate
 
-  // Selection border drawn EVERY frame outside the gate so the rectangle can
-  // toggle (carousel ↔ menu) without invalidating the cached buffer.
-  if (hasSelection && cachedActualCoverWidth > 0) {
+  // Selection border drawn EVERY frame on the centered cover, regardless of
+  // whether the cursor is currently on the carousel or has moved down into
+  // the menu strip. Keeping the outline on at all times means the carousel
+  // area is visually identical across carousel↔menu transitions and never
+  // needs to repaint — only the menu strip's selection cell moves. The
+  // border lives outside the cover-buffer cache so it overlays the restored
+  // framebuffer cleanly each frame.
+  if (cachedActualCoverWidth > 0) {
     renderer.drawRoundedRect(cachedCenterCoverX - 2, cachedCenterCoverY - 2, cachedActualCoverWidth + 4,
                              cachedActualCoverHeight + 4, 4, bookCornerRadius + 2, true);
+    // 2-px white halo just outside the 4-px black selection outline — same
+    // visual-separation trick used on the side covers. The center cover is
+    // drawn AFTER all four side covers, so without this halo the side
+    // covers' pixels sit flush against the centered cover's outer black
+    // edge. Erasing a 2-px ring outside the outline carves a clean gap
+    // between the centered cover and whatever side cover happened to
+    // overlap that area. The selection outline is 4 px wide starting at
+    // offset -2, so the halo sits at offset -4 with lineWidth=2 (its
+    // outermost edge is 2 px beyond the selection outline's outermost edge).
+    renderer.drawRoundedRect(cachedCenterCoverX - 4, cachedCenterCoverY - 4, cachedActualCoverWidth + 8,
+                             cachedActualCoverHeight + 8, 2, bookCornerRadius + 4, false);
   }
 }
 

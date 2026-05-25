@@ -162,10 +162,16 @@ class BaseTheme {
                              const char* rightLabel = nullptr) const;
   virtual void drawTabBar(const GfxRenderer& renderer, Rect rect, const std::vector<TabInfo>& tabs,
                           bool selected) const;
+  // `thumbDataBuffers` is an optional caller-owned RAM cache of each book's
+  // thumbnail BMP bytes (parallel-indexed with `recentBooks`). When provided,
+  // themes that decode covers can construct memory-backed `Bitmap`s instead
+  // of reopening SD files for every render. Pass nullptr (or an empty inner
+  // vector for a specific book) to force file-backed reads as before.
   virtual void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                    int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                    bool& bufferRestored, const std::function<bool()>& storeCoverBuffer,
-                                   const BookReadingStats* stats = nullptr, float progressPercent = -1.0f) const;
+                                   const BookReadingStats* stats = nullptr, float progressPercent = -1.0f,
+                                   const std::vector<std::vector<uint8_t>>* thumbDataBuffers = nullptr) const;
   virtual void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                               const std::function<std::string(int index)>& buttonLabel,
                               const std::function<UIIcon(int index)>& rowIcon) const;

@@ -32,6 +32,14 @@ class UITheme {
   // No scaling is done here. Returns an empty string for invalid dimensions or
   // unsupported placeholder templates.
   static std::string getCoverThumbPath(const std::string& coverBmpPath, int width, int height);
+  // Substitutes placeholders only — no Storage.exists checks, no legacy or
+  // dir-scan fallbacks. Use this when you want the exact W×H thumb path the
+  // caller should attempt to use/generate, regardless of what other thumb
+  // sizes happen to be on disk. The general getCoverThumbPath above is for
+  // render-time resolution (with all the fallbacks the carousel needs to
+  // avoid solid-black covers); this is for load-time decisions about whether
+  // regeneration is required.
+  static std::string resolveExactCoverThumbPath(const std::string& coverBmpPath, int coverHeight);
   static UIIcon getFileIcon(const std::string& filename);
   static int getStatusBarHeight();
   static int getProgressBarHeight();

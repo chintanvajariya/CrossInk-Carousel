@@ -71,9 +71,14 @@ Rect fittedBitmapRect(const Bitmap& bitmap, const Rect& target) {
     return target;
   }
 
+  // Scale to fit the target's bounding box, preserving aspect ratio. Previously
+  // capped at 1.0 (downscale only), which left small thumbs rendering at 1:1
+  // in the top-left of an oversized 349×583 Minimal cover slot. The carousel
+  // now allows upscale here too — `drawBitmap1Bit` handles the actual pixel
+  // upscale via nearest-neighbor block fill.
   const float widthScale = static_cast<float>(target.width) / static_cast<float>(bitmap.getWidth());
   const float heightScale = static_cast<float>(target.height) / static_cast<float>(bitmap.getHeight());
-  const float scale = std::min(1.0f, std::min(widthScale, heightScale));
+  const float scale = std::min(widthScale, heightScale);
   const int drawnW = std::min(target.width, std::max(1, static_cast<int>(std::ceil(bitmap.getWidth() * scale))));
   const int drawnH = std::min(target.height, std::max(1, static_cast<int>(std::ceil(bitmap.getHeight() * scale))));
   return Rect{target.x + (target.width - drawnW) / 2, target.y + (target.height - drawnH) / 2, drawnW, drawnH};
@@ -89,38 +94,78 @@ uint8_t selectedQuoteIndex() {
   return index;
 }
 
+// Hugged-to-cover progress block: a 6-px-tall bar 18 px below the cover
+// (within the 16-20 px design target), then a single row of small text
+// beneath — elapsed reading time on the left, projected total on the right.
+// Same elapsed/projected reading-time computation Flow's carousel uses, so
+// the two themes give consistent numbers for the same book.
 void drawProgressBlock(const GfxRenderer& renderer, const Rect& coverRect, const BookReadingStats* stats,
                        float progressPercent) {
   if ((stats == nullptr || stats->totalReadingSeconds == 0) && progressPercent < 0.0f) {
     return;
   }
 
+  constexpr int kCoverToBarGap = 18;       // 16-20 px target → 18
+  // Symmetric gap: bar-to-text spacing matches cover-to-bar so the bar sits
+  // visually centered between the cover and the time labels. Verified to
+  // leave 60+ px of clearance above the button-hints row on both X3 (792 px
+  // tall) and X4 (800 px tall) so the labels never crowd the hints.
+  constexpr int kBarToLabelGap = 18;
+  constexpr int kBarFillHeight = 6;        // read portion: thick band
+  constexpr int kBarTrackHeight = 2;       // unread portion: thin line
+  static_assert(kBarTrackHeight < kBarFillHeight && (kBarFillHeight - kBarTrackHeight) % 2 == 0,
+                "Track must be thinner than fill and the difference must be even for clean centering");
+
   const int barW = coverRect.width;
   const int barX = coverRect.x;
-  const int durationY = coverRect.y + coverRect.height + kProgressBlockGap;
-  const int barY = durationY + renderer.getLineHeight(UI_10_FONT_ID) + kProgressBarGap;
+  const int barY = coverRect.y + coverRect.height + kCoverToBarGap;
+  // Track sits centered vertically inside the fill band so both share the
+  // same horizontal centerline. In the read portion, the 6-px fill engulfs
+  // the 2-px track; in the unread portion, only the track is visible — the
+  // bar visually reads as a thin line that thickens at the read section.
+  // Same trick the Flow carousel uses; sized larger here for the Minimal
+  // home's bigger cover/breathing room.
+  const int trackY = barY + (kBarFillHeight - kBarTrackHeight) / 2;
 
-  if (stats != nullptr && stats->totalReadingSeconds > 0) {
-    char duration[32];
-    BookReadingStats::formatDuration(stats->totalReadingSeconds, duration, sizeof(duration));
-    renderer.drawText(UI_10_FONT_ID, barX, durationY, duration);
+  if (progressPercent >= 0.0f) {
+    const int progress = std::clamp(static_cast<int>(progressPercent + 0.5f), 0, 100);
+    const int fillW = (barW * progress) / 100;
+    renderer.fillRect(barX, trackY, barW, kBarTrackHeight, true);
+    if (fillW > 0) {
+      renderer.fillRect(barX, barY, fillW, kBarFillHeight, true);
+    }
   }
 
-  if (progressPercent < 0.0f) {
-    return;
+  // Time read (left) and projected total (right) sit on the same baseline
+  // below the bar. Projected is only meaningful once the user has actually
+  // read some of the book — for fresh / completed books we just show the
+  // elapsed reading time on the left without the right-hand value.
+  const uint32_t elapsedSecs = (stats != nullptr) ? stats->totalReadingSeconds : 0;
+  const int labelY = barY + kBarFillHeight + kBarToLabelGap;
+  auto formatHMM = [](uint32_t seconds, char* buf, size_t len) {
+    const uint32_t hours = seconds / 3600;
+    const uint32_t minutes = (seconds % 3600) / 60;
+    // Same H:MM format the Flow theme uses, so a book read across themes
+    // shows identical elapsed / projected numbers.
+    snprintf(buf, len, "%u:%02u", static_cast<unsigned>(hours), static_cast<unsigned>(minutes));
+  };
+
+  char elapsedBuf[16];
+  formatHMM(elapsedSecs, elapsedBuf, sizeof(elapsedBuf));
+  if (elapsedSecs > 0) {
+    renderer.drawText(UI_10_FONT_ID, barX, labelY, elapsedBuf);
   }
 
-  const int progress = std::clamp(static_cast<int>(progressPercent + 0.5f), 0, 100);
-  const int fillW = (barW * progress) / 100;
-  renderer.fillRectDither(barX, barY, barW, kProgressBarHeight, Color::LightGray);
-  if (fillW > 0) {
-    renderer.fillRectDither(barX, barY, fillW, kProgressBarHeight, Color::DarkGray);
+  const bool isCompleted = (stats != nullptr && stats->isCompleted);
+  const bool finished = isCompleted || (progressPercent >= 99.5f);
+  if (!finished && elapsedSecs > 0 && progressPercent >= 0.1f) {
+    const float projectedF = static_cast<float>(elapsedSecs) * 100.0f / progressPercent;
+    const uint32_t projectedSecs = static_cast<uint32_t>(projectedF + 0.5f);
+    char projectedBuf[16];
+    formatHMM(projectedSecs, projectedBuf, sizeof(projectedBuf));
+    const int projW = renderer.getTextWidth(UI_10_FONT_ID, projectedBuf);
+    renderer.drawText(UI_10_FONT_ID, barX + barW - projW, labelY, projectedBuf);
   }
-
-  char progressLabel[12];
-  snprintf(progressLabel, sizeof(progressLabel), "%d%%", progress);
-  const int labelW = renderer.getTextWidth(UI_10_FONT_ID, progressLabel);
-  renderer.drawText(UI_10_FONT_ID, barX + barW - labelW, barY + kProgressBarHeight + kProgressLabelGap, progressLabel);
 }
 
 void drawMissingBookCover(const GfxRenderer& renderer, const Rect& coverRect, const RecentBook& book) {
@@ -186,10 +231,12 @@ void MinimalTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char
 
   renderer.fillRect(rect.x, rect.y, rect.width, rect.height, false);
 
-  // The corner battery icon upstream Minimal draws here overlaps with the
-  // top-edge battery bar this fork shows on every theme (BaseTheme::
-  // drawBatteryTopBar via drawHeader). Skip it; the top bar already gives
-  // the user the same information.
+  // Draw the top-edge battery bar (skip the upstream Minimal corner battery
+  // icon — it'd overlap the top bar). Gated on the user's "Show Battery"
+  // toggle, same as other themes.
+  if (SETTINGS.statusBarBattery) {
+    drawBatteryTopBar(renderer);
+  }
   if (title) {
     constexpr int titleInsetX = 12;
     const int maxTitleWidth = rect.x + rect.width - titleInsetX - MinimalMetrics::values.contentSidePadding - rect.x;
@@ -405,7 +452,8 @@ void MinimalTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, cons
 void MinimalTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                        int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                        bool& bufferRestored, const std::function<bool()>& storeCoverBuffer,
-                                       const BookReadingStats* stats, float progressPercent) const {
+                                       const BookReadingStats* stats, float progressPercent,
+                                       const std::vector<std::vector<uint8_t>>* /*thumbDataBuffers*/) const {
   (void)selectorIndex;
   (void)bufferRestored;
 

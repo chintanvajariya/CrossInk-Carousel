@@ -21,25 +21,56 @@ Bitmap::~Bitmap() {
   delete fsDitherer;
 }
 
-uint16_t Bitmap::readLE16(FsFile& f) {
-  const int c0 = f.read();
-  const int c1 = f.read();
-  const auto b0 = static_cast<uint8_t>(c0 < 0 ? 0 : c0);
-  const auto b1 = static_cast<uint8_t>(c1 < 0 ? 0 : c1);
+bool Bitmap::isOpen() const {
+  if (fileBacking != nullptr) return static_cast<bool>(*fileBacking);
+  return memBacking != nullptr && memSize > 0;
+}
+
+bool Bitmap::seekAbsolute(size_t pos) const {
+  if (fileBacking != nullptr) return fileBacking->seek(pos);
+  if (pos > memSize) return false;
+  memPos = pos;
+  return true;
+}
+
+bool Bitmap::seekRelative(int64_t offset) const {
+  if (fileBacking != nullptr) return fileBacking->seekCur(offset);
+  const int64_t newPos = static_cast<int64_t>(memPos) + offset;
+  if (newPos < 0 || newPos > static_cast<int64_t>(memSize)) return false;
+  memPos = static_cast<size_t>(newPos);
+  return true;
+}
+
+int Bitmap::readBlock(void* buf, size_t count) const {
+  if (fileBacking != nullptr) return fileBacking->read(buf, count);
+  if (memPos >= memSize) return 0;
+  const size_t avail = memSize - memPos;
+  const size_t toCopy = count < avail ? count : avail;
+  std::memcpy(buf, memBacking + memPos, toCopy);
+  memPos += toCopy;
+  return static_cast<int>(toCopy);
+}
+
+uint8_t Bitmap::readByte() const {
+  if (fileBacking != nullptr) {
+    const int c = fileBacking->read();
+    return static_cast<uint8_t>(c < 0 ? 0 : c);
+  }
+  if (memPos >= memSize) return 0;
+  return memBacking[memPos++];
+}
+
+uint16_t Bitmap::readLE16() const {
+  const uint8_t b0 = readByte();
+  const uint8_t b1 = readByte();
   return static_cast<uint16_t>(b0) | (static_cast<uint16_t>(b1) << 8);
 }
 
-uint32_t Bitmap::readLE32(FsFile& f) {
-  const int c0 = f.read();
-  const int c1 = f.read();
-  const int c2 = f.read();
-  const int c3 = f.read();
-
-  const auto b0 = static_cast<uint8_t>(c0 < 0 ? 0 : c0);
-  const auto b1 = static_cast<uint8_t>(c1 < 0 ? 0 : c1);
-  const auto b2 = static_cast<uint8_t>(c2 < 0 ? 0 : c2);
-  const auto b3 = static_cast<uint8_t>(c3 < 0 ? 0 : c3);
-
+uint32_t Bitmap::readLE32() const {
+  const uint8_t b0 = readByte();
+  const uint8_t b1 = readByte();
+  const uint8_t b2 = readByte();
+  const uint8_t b3 = readByte();
   return static_cast<uint32_t>(b0) | (static_cast<uint32_t>(b1) << 8) | (static_cast<uint32_t>(b2) << 16) |
          (static_cast<uint32_t>(b3) << 24);
 }
@@ -83,28 +114,28 @@ const char* Bitmap::errorToString(BmpReaderError err) {
 }
 
 BmpReaderError Bitmap::parseHeaders() {
-  if (!file) return BmpReaderError::FileInvalid;
-  if (!file.seek(0)) return BmpReaderError::SeekStartFailed;
+  if (!isOpen()) return BmpReaderError::FileInvalid;
+  if (!seekAbsolute(0)) return BmpReaderError::SeekStartFailed;
 
   // --- BMP FILE HEADER ---
-  const uint16_t bfType = readLE16(file);
+  const uint16_t bfType = readLE16();
   if (bfType != 0x4D42) return BmpReaderError::NotBMP;
 
-  file.seekCur(8);
-  bfOffBits = readLE32(file);
+  seekRelative(8);
+  bfOffBits = readLE32();
 
   // --- DIB HEADER ---
-  const uint32_t biSize = readLE32(file);
+  const uint32_t biSize = readLE32();
   if (biSize < 40) return BmpReaderError::DIBTooSmall;
 
-  width = static_cast<int32_t>(readLE32(file));
-  const auto rawHeight = static_cast<int32_t>(readLE32(file));
+  width = static_cast<int32_t>(readLE32());
+  const auto rawHeight = static_cast<int32_t>(readLE32());
   topDown = rawHeight < 0;
   height = topDown ? -rawHeight : rawHeight;
 
-  const uint16_t planes = readLE16(file);
-  bpp = readLE16(file);
-  const uint32_t comp = readLE32(file);
+  const uint16_t planes = readLE16();
+  bpp = readLE16();
+  const uint32_t comp = readLE32();
   const bool validBpp = bpp == 1 || bpp == 2 || bpp == 4 || bpp == 8 || bpp == 24 || bpp == 32;
 
   if (planes != 1) return BmpReaderError::BadPlanes;
@@ -112,12 +143,12 @@ BmpReaderError Bitmap::parseHeaders() {
   // Allow BI_RGB (0) for all, and BI_BITFIELDS (3) for 32bpp which is common for BGRA masks.
   if (!(comp == 0 || (bpp == 32 && comp == 3))) return BmpReaderError::UnsupportedCompression;
 
-  file.seekCur(12);  // biSizeImage, biXPelsPerMeter, biYPelsPerMeter
-  colorsUsed = readLE32(file);
+  seekRelative(12);  // biSizeImage, biXPelsPerMeter, biYPelsPerMeter
+  colorsUsed = readLE32();
   // BMP spec: colorsUsed==0 means default (2^bpp for paletted formats)
   if (colorsUsed == 0 && bpp <= 8) colorsUsed = 1u << bpp;
   if (colorsUsed > 256u) return BmpReaderError::PaletteTooLarge;
-  file.seekCur(4);  // biClrImportant
+  seekRelative(4);  // biClrImportant
 
   if (width <= 0 || height <= 0) return BmpReaderError::BadDimensions;
 
@@ -135,12 +166,12 @@ BmpReaderError Bitmap::parseHeaders() {
   if (colorsUsed > 0) {
     for (uint32_t i = 0; i < colorsUsed; i++) {
       uint8_t rgb[4];
-      file.read(rgb, 4);  // Read B, G, R, Reserved in one go
+      readBlock(rgb, 4);  // Read B, G, R, Reserved in one go
       paletteLum[i] = (77u * rgb[2] + 150u * rgb[1] + 29u * rgb[0]) >> 8;
     }
   }
 
-  if (!file.seek(bfOffBits)) {
+  if (!seekAbsolute(bfOffBits)) {
     return BmpReaderError::SeekPixelDataFailed;
   }
 
@@ -180,7 +211,7 @@ BmpReaderError Bitmap::parseHeaders() {
 // packed 2bpp output, 0 = black, 1 = dark gray, 2 = light gray, 3 = white
 BmpReaderError Bitmap::readNextRow(uint8_t* data, uint8_t* rowBuffer) const {
   // Note: rowBuffer should be pre-allocated by the caller to size 'rowBytes'
-  if (file.read(rowBuffer, rowBytes) != rowBytes) return BmpReaderError::ShortReadRow;
+  if (readBlock(rowBuffer, rowBytes) != rowBytes) return BmpReaderError::ShortReadRow;
 
   prevRowY += 1;
 
@@ -283,7 +314,7 @@ BmpReaderError Bitmap::readNextRow(uint8_t* data, uint8_t* rowBuffer) const {
 }
 
 BmpReaderError Bitmap::rewindToData() const {
-  if (!file.seek(bfOffBits)) {
+  if (!seekAbsolute(bfOffBits)) {
     return BmpReaderError::SeekPixelDataFailed;
   }
 

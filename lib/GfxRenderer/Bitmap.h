@@ -64,7 +64,16 @@ class Bitmap {
  public:
   static const char* errorToString(BmpReaderError err);
 
-  explicit Bitmap(FsFile& file, bool dithering = false) : file(file), dithering(dithering) {}
+  // File-backed bitmap. The caller owns `file` and must keep it open for the
+  // lifetime of any read on this Bitmap. Used everywhere we stream a thumb
+  // straight off the SD card.
+  explicit Bitmap(FsFile& file, bool dithering = false) : fileBacking(&file), dithering(dithering) {}
+  // Memory-backed bitmap. `data` must hold a full, valid BMP file (header +
+  // pixel rows) and stay alive for the lifetime of this Bitmap. Used by the
+  // Flow home carousel: thumbnails are slurped into a RAM cache at home-enter
+  // so the per-render path doesn't reopen the SD file for every scroll.
+  Bitmap(const uint8_t* data, size_t size, bool dithering = false)
+      : fileBacking(nullptr), memBacking(data), memSize(size), dithering(dithering) {}
   ~Bitmap();
   BmpReaderError parseHeaders();
   BmpReaderError readNextRow(uint8_t* data, uint8_t* rowBuffer) const;
@@ -78,10 +87,20 @@ class Bitmap {
   uint16_t getBpp() const { return bpp; }
 
  private:
-  static uint16_t readLE16(FsFile& f);
-  static uint32_t readLE32(FsFile& f);
+  // Backing-store-agnostic I/O primitives. Each branches on whether the
+  // bitmap was constructed against a file or a memory buffer.
+  bool isOpen() const;
+  bool seekAbsolute(size_t pos) const;
+  bool seekRelative(int64_t offset) const;
+  int readBlock(void* buf, size_t count) const;
+  uint8_t readByte() const;
+  uint16_t readLE16() const;
+  uint32_t readLE32() const;
 
-  FsFile& file;
+  FsFile* fileBacking = nullptr;
+  const uint8_t* memBacking = nullptr;
+  size_t memSize = 0;
+  mutable size_t memPos = 0;
   bool dithering = false;
   int width = 0;
   int height = 0;

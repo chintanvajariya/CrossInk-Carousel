@@ -354,8 +354,30 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
       progress++;
       continue;
     }
+    // Self-heal: if a previous loadRecentCovers pass cleared this book's
+    // coverBmpPath (because thumb gen returned false), re-derive the template
+    // path from a fresh Epub/Xtc instance so we get another shot at it. This
+    // matters after a firmware upgrade where the new build's larger thumb
+    // dimensions stress the JPEG decoder past the first run's heap headroom —
+    // without this branch, those books permanently render as the fallback
+    // silhouette.
+    if (book.coverBmpPath.empty()) {
+      RecentBook refreshed = RECENT_BOOKS.getDataFromBook(book.path);
+      if (!refreshed.coverBmpPath.empty()) {
+        book.coverBmpPath = refreshed.coverBmpPath;
+        (void)RECENT_BOOKS.updateBook(book.path, book.title, book.author, book.coverBmpPath);
+      }
+    }
     if (!book.coverBmpPath.empty()) {
-      std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
+      // Use the EXACT-size path (no fallback chain) so the regen decision is
+      // based on whether the thumb at this theme's coverHeight exists on
+      // disk — not whether ANY thumb size happens to be on disk. The render
+      // path keeps the fallback chain via UITheme::getCoverThumbPath so we
+      // still show something while a higher-resolution thumb regenerates.
+      // Without this, switching from Flow (392-tall thumbs) to Minimal
+      // (583-tall slots) would just upscale the Flow thumb to fill the
+      // Minimal slot, producing visibly pixelated covers.
+      std::string coverPath = UITheme::resolveExactCoverThumbPath(book.coverBmpPath, coverHeight);
       if (!Storage.exists(coverPath.c_str())) {
         // Heap-floor guard before each fresh thumb gen. If we're already low,
         // stop the loop entirely so the remaining cards render as fallbacks
@@ -380,8 +402,14 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
           GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / recentBooks.size()));
           bool success = epub.generateThumbBmp(coverHeight);
           if (!success) {
-            RECENT_BOOKS.updateBook(book.path, book.title, book.author, "");
-            book.coverBmpPath = "";
+            // Transient: a single failure (heap pressure, decoder edge case,
+            // an SD read hiccup) used to permanently zero out coverBmpPath
+            // here, which left the book rendering as the fallback silhouette
+            // forever even after the underlying cause cleared. Keep the
+            // template path so the next home enter retries — the render path
+            // already degrades gracefully when the file is missing.
+            LOG_ERR("HOME", "generateThumbBmp(%d) failed for %s; will retry next home enter",
+                    coverHeight, book.path.c_str());
           }
           coverRendered = false;
           requestUpdate();
@@ -397,8 +425,8 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
             GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / recentBooks.size()));
             bool success = xtc.generateThumbBmp(coverHeight);
             if (!success) {
-              RECENT_BOOKS.updateBook(book.path, book.title, book.author, "");
-              book.coverBmpPath = "";
+              LOG_ERR("HOME", "xtc generateThumbBmp(%d) failed for %s; will retry next home enter",
+                      coverHeight, book.path.c_str());
             }
             coverRendered = false;
             requestUpdate();
@@ -411,6 +439,68 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
 
   recentsLoaded = true;
   recentsLoading = false;
+
+  // Now that every recent book either has its thumb on disk or is known to
+  // have no cover, slurp the thumb file bytes into RAM so per-render carousel
+  // draws don't reopen the SD file for each of the 5 covers. Capped at
+  // kMaxThumbCacheBytes per entry; entries we can't cache fall through to
+  // the existing file-backed Bitmap path.
+  loadRecentThumbsToRam(coverHeight);
+}
+
+void HomeActivity::loadRecentThumbsToRam(int coverHeight) {
+  // Reset the cache to mirror the current recentBooks vector size and clear
+  // any stale buffers (e.g. after a recents reshuffle).
+  recentBookThumbData.clear();
+  recentBookThumbData.resize(recentBooks.size());
+
+  for (size_t i = 0; i < recentBooks.size(); ++i) {
+    const auto& book = recentBooks[i];
+    if (book.coverBmpPath.empty()) continue;
+
+    const std::string resolvedPath = UITheme::getCoverThumbPath(book.coverBmpPath, coverHeight);
+    if (resolvedPath.empty()) continue;
+
+    FsFile file;
+    if (!Storage.openFileForRead("HOME", resolvedPath, file)) continue;
+
+    const size_t fileSize = file.fileSize();
+    if (fileSize == 0 || fileSize > kMaxThumbCacheBytes) {
+      file.close();
+      LOG_DBG("HOME", "Thumb %s skipped from RAM cache (size %u, cap %u)", resolvedPath.c_str(),
+              static_cast<unsigned>(fileSize), static_cast<unsigned>(kMaxThumbCacheBytes));
+      continue;
+    }
+
+    // Heap-floor guard: we build with -fno-exceptions, so a bad_alloc from
+    // vector::resize() doesn't unwind — it goes straight to __terminate ->
+    // abort() and panics the firmware (observed in a real crash report on
+    // first home enter when the largest contiguous heap block was smaller
+    // than the requested thumb size). Conservatively skip caching when the
+    // largest contiguous block doesn't have enough headroom; the affected
+    // book just renders through the slow file-backed path instead.
+    constexpr size_t kAllocHeadroom = 8 * 1024;
+    const uint32_t maxAllocHeap = ESP.getMaxAllocHeap();
+    if (maxAllocHeap < fileSize + kAllocHeadroom) {
+      file.close();
+      LOG_ERR("HOME", "Thumb %s skipped from RAM cache (max alloc %u < needed %u)", resolvedPath.c_str(),
+              static_cast<unsigned>(maxAllocHeap), static_cast<unsigned>(fileSize + kAllocHeadroom));
+      continue;
+    }
+
+    auto& buf = recentBookThumbData[i];
+    buf.resize(fileSize);
+    const int bytesRead = file.read(buf.data(), fileSize);
+    file.close();
+
+    if (bytesRead != static_cast<int>(fileSize)) {
+      // Partial read — drop the entry rather than serving truncated data.
+      buf.clear();
+      buf.shrink_to_fit();
+      LOG_ERR("HOME", "Thumb %s partial RAM read (%d / %u)", resolvedPath.c_str(), bytesRead,
+              static_cast<unsigned>(fileSize));
+    }
+  }
 }
 
 void HomeActivity::onEnter() {
@@ -476,6 +566,10 @@ void HomeActivity::onExit() {
 
   // Free the stored cover buffer if any
   freeCoverBuffer();
+  // Release the RAM-cached thumbnail bytes; they're per-home-session and
+  // can be re-slurped from disk on the next enter.
+  recentBookThumbData.clear();
+  recentBookThumbData.shrink_to_fit();
 }
 
 bool HomeActivity::storeCoverBuffer() {
@@ -525,6 +619,7 @@ void HomeActivity::freeCoverBuffer() {
   }
   coverBufferStored = false;
   coverBufferBookIdx = -1;
+  homeMenuIconsCached = false;
 }
 
 void HomeActivity::loop() {
@@ -735,6 +830,10 @@ void HomeActivity::loop() {
       selectorIndex = (selectorIndex + 1) % recentCount;
       coverRendered = false;
       coverBufferStored = false;
+      // The theme's next storeCoverBuffer will overwrite our cache without
+      // the menu icons baked in, so mark the icons as no longer cached and
+      // force the next render to re-paint them.
+      homeMenuIconsCached = false;
     }
     requestUpdate();
   }
@@ -745,6 +844,7 @@ void HomeActivity::loop() {
       selectorIndex = (selectorIndex == 0) ? recentCount - 1 : selectorIndex - 1;
       coverRendered = false;
       coverBufferStored = false;
+      homeMenuIconsCached = false;
     }
     requestUpdate();
   }
@@ -777,16 +877,18 @@ void HomeActivity::render(RenderLock&&) {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
 
-  // Resolve which book the carousel should center on this frame up-front so
-  // we can detect a stale cached cover buffer (the user scrolled while the
-  // previous render was in flight on the render task). carouselDisplayIndex
-  // mirrors the encoding used below: in-carousel = selectorIndex; in-menu =
-  // recentCount + lastBookIndex so the same book stays centered.
+  // Resolve which book is centered in the carousel for this frame. Same
+  // value whether the cursor is on the carousel (`selectorIndex` IS the
+  // book idx) or down in the menu (`lastBookIndex` is the book that was
+  // centered when the cursor left the carousel). Using a single
+  // mode-invariant index here means the cover-buffer cache key doesn't flip
+  // when the cursor crosses between the two — toggling carousel↔menu
+  // preserves the cache, and the carousel area doesn't repaint.
   const int recentCountInt = static_cast<int>(recentBooks.size());
   const bool inMenuForCarousel = static_cast<int>(selectorIndex) >= recentCountInt;
-  const int carouselDisplayIndex =
+  const int centeredBookIdx =
       (inMenuForCarousel && lastBookIndex >= 0 && lastBookIndex < recentCountInt)
-          ? recentCountInt + lastBookIndex
+          ? lastBookIndex
           : static_cast<int>(selectorIndex);
 
   // If the cached cover buffer was captured for a different book than the one
@@ -794,11 +896,11 @@ void HomeActivity::render(RenderLock&&) {
   // task) advanced selectorIndex while the render task was mid-draw and the
   // theme's end-of-render coverRendered=true overwrote the loop's
   // coverRendered=false.
-  if (coverBufferStored && coverBufferBookIdx != carouselDisplayIndex) {
+  if (coverBufferStored && coverBufferBookIdx != centeredBookIdx) {
     freeCoverBuffer();  // also resets coverBufferStored / coverBufferBookIdx
     coverRendered = false;
   }
-  pendingCoverBufferBookIdx = carouselDisplayIndex;
+  pendingCoverBufferBookIdx = centeredBookIdx;
 
   renderer.clearScreen();
   bool bufferRestored = coverBufferStored && restoreCoverBuffer();
@@ -809,7 +911,9 @@ void HomeActivity::render(RenderLock&&) {
   // Home-page-only battery percentage under the battery top bar, right-aligned
   // at the same screenMargin inset the bar uses. The left/center status texts
   // we briefly tried were too cluttered, so this stays a solo element.
-  {
+  // Skipped on the Minimal theme: Minimal's home page is intentionally text-
+  // light, and the top-edge battery bar alone is enough.
+  if (!isMinimalTheme()) {
     const uint16_t batteryPct = std::min<uint16_t>(powerManager.getBatteryPercentage(), 100);
     char pctBuf[8];
     snprintf(pctBuf, sizeof(pctBuf), "%u%%", static_cast<unsigned>(batteryPct));
@@ -827,16 +931,11 @@ void HomeActivity::render(RenderLock&&) {
     renderer.drawText(SMALL_FONT_ID, pageWidth - rightInset - pctWidth, pctY, pctBuf, true);
   }
 
-  // (carouselDisplayIndex / recentCountInt / inMenuForCarousel computed at
-  // top of render() so the cover-buffer-staleness check can run before
+  // (centeredBookIdx / recentCountInt / inMenuForCarousel computed at top of
+  // render() so the cover-buffer-staleness check can run before
   // restoreCoverBuffer.)
   // Stats for the book currently centered in the carousel — Flow theme uses
-  // this to render an "Xh Ym" indicator under the cover. Resolve the centered
-  // index the same way carouselDisplayIndex does, then index the per-book
-  // vector populated in onEnter().
-  const int centeredBookIdx = inMenuForCarousel
-                                  ? (lastBookIndex >= 0 && lastBookIndex < recentCountInt ? lastBookIndex : 0)
-                                  : static_cast<int>(selectorIndex);
+  // this to render an "Xh Ym" indicator under the cover.
   const BookReadingStats* centeredBookStats =
       (centeredBookIdx >= 0 && centeredBookIdx < static_cast<int>(recentBookStats.size()))
           ? &recentBookStats[centeredBookIdx]
@@ -872,9 +971,9 @@ void HomeActivity::render(RenderLock&&) {
   constexpr int kHomeMenuCount = 6;
 
   GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
-                          recentBooks, carouselDisplayIndex, coverRendered, coverBufferStored, bufferRestored,
+                          recentBooks, centeredBookIdx, coverRendered, coverBufferStored, bufferRestored,
                           std::bind(&HomeActivity::storeCoverBuffer, this), centeredBookStats,
-                          centeredBookProgress);
+                          centeredBookProgress, &recentBookThumbData);
 
   const int menuSelectedIndex =
       (selectorIndex >= recentBooks.size()) ? static_cast<int>(selectorIndex - recentBooks.size()) : -1;
@@ -903,7 +1002,7 @@ void HomeActivity::render(RenderLock&&) {
       minimalHomeNavIndex = homeNavCount - 1;
     }
     MinimalTheme::setHomeButtonHintSelection(minimalHomeNavIndex);
-    GUI.drawButtonHints(renderer, tr(STR_MENU), tr(STR_BROWSE), tr(STR_SETTINGS_TITLE),
+    GUI.drawButtonHints(renderer, tr(STR_RECENT), tr(STR_BROWSE), tr(STR_SETTINGS_TITLE),
                         recentBooks.empty() ? "" : tr(STR_READ));
     renderer.displayBuffer();
     if (!firstRenderDone) {
@@ -955,7 +1054,15 @@ void HomeActivity::render(RenderLock&&) {
   // are Option D — live counts / state for each menu item. These constants
   // MUST stay in sync with LyraFlowTheme's progressBarTopY / timeReadY math
   // so the menu-mode wipe lands exactly on the carousel-mode title area.
-  if (menuSelectedIndex >= 0 && menuSelectedIndex < kHomeMenuCount) {
+  //
+  // Wrapped in a lambda and invoked AFTER the icon-strip cache below so the
+  // cache holds covers + book title/author + icons but NOT this overlay (whose
+  // content varies per menu selection). On a future render the cache restore
+  // brings back the book's title/author; if we're in menu mode we then overlay
+  // the menu label on top, and if we're not, the book title/author is already
+  // correctly visible from the restore — no per-mode invalidation needed.
+  auto drawMenuOverlay = [&]() {
+    if (menuSelectedIndex < 0 || menuSelectedIndex >= kHomeMenuCount) return;
     const int rectTop = metrics.homeTopPadding;
     const int rectBottom = rectTop + metrics.homeCoverTileHeight;
     constexpr int kCoverTopOffset = 48;
@@ -1016,7 +1123,7 @@ void HomeActivity::render(RenderLock&&) {
       const int subW = renderer.getTextWidth(UI_10_FONT_ID, truncSub.c_str());
       renderer.drawText(UI_10_FONT_ID, (pageWidth - subW) / 2, subtitleY, truncSub.c_str(), true);
     }
-  }
+  };
   // Icon strip sizing (kHomeMenuItems / kHomeMenuCount defined above).
   constexpr int kIconSrcSize = 32;   // raw bitmap dimensions (assets are 32×32)
   constexpr int iconSize = 40;       // visual size; drawIconScaled resamples 32→40
@@ -1029,14 +1136,16 @@ void HomeActivity::render(RenderLock&&) {
   const int totalIconArea = pageWidth - 2 * sideMargin;
   const int iconPitch = totalIconArea / kHomeMenuCount;
 
-  for (int i = 0; i < kHomeMenuCount; ++i) {
-    const int cellCenterX = sideMargin + iconPitch / 2 + i * iconPitch;
-    const int cellX = cellCenterX - iconCellSize / 2;
+  auto iconCellCenterX = [&](int i) { return sideMargin + iconPitch / 2 + i * iconPitch; };
+
+  // One icon draw — no selection-cell background — extracted so we can call
+  // it from two places: (1) the fresh pass that paints all 6 icons into the
+  // cache, and (2) the per-frame redraw of the selected icon over the cell
+  // background (the dithered LightGray fill erases icon pixels underneath).
+  auto drawSingleMenuIcon = [&](int i) {
+    const int cellCenterX = iconCellCenterX(i);
     const int iconX = cellCenterX - iconSize / 2;
     const int iconY = iconCellTopY + (iconCellSize - iconSize) / 2;
-    if (i == menuSelectedIndex) {
-      renderer.fillRoundedRect(cellX, iconCellTopY, iconCellSize, iconCellSize, 6, Color::LightGray);
-    }
     if (kHomeMenuItems[i].isBookmark) {
       // Outlined bookmark, drawn at the same 32×32 logical source resolution
       // as the other home-strip icons and nearest-neighbor blitted up to the
@@ -1103,6 +1212,44 @@ void HomeActivity::render(RenderLock&&) {
     } else if (kHomeMenuItems[i].icon != nullptr) {
       drawIconScaled(renderer, kHomeMenuItems[i].icon, kIconSrcSize, iconX, iconY, iconSize);
     }
+  };
+
+  // Pass 1: paint every icon (no selection cell), then snapshot the
+  // framebuffer so subsequent menu↔carousel toggles can restoreCoverBuffer()
+  // and skip this loop entirely. The theme's earlier storeCoverBuffer caught
+  // the framebuffer *before* these icons were drawn; we re-cache here so the
+  // icons are baked in too.
+  //
+  // homeMenuIconsCached gates the redraw: it's false on first render and
+  // after any cache invalidation (book change, freeCoverBuffer); once we
+  // succeed below it stays true until the next invalidation event.
+  if (!homeMenuIconsCached || !bufferRestored) {
+    for (int i = 0; i < kHomeMenuCount; ++i) {
+      drawSingleMenuIcon(i);
+    }
+    if (storeCoverBuffer()) {
+      homeMenuIconsCached = true;
+      coverBufferStored = true;
+      coverRendered = true;
+    }
+  }
+
+  // Menu label + subtitle overlay (only when an item is selected). Drawn
+  // AFTER the icon cache so the cache stays mode-agnostic — restore brings
+  // back the book's title/author, and we overlay the menu label here if
+  // needed. When transitioning menu → carousel, this is a no-op and the
+  // book's title/author from the restore stays visible.
+  drawMenuOverlay();
+
+  // Pass 2: selection cell + redraw of the selected icon. The fill uses a
+  // dithered LightGray that overwrites icon pixels underneath, so the icon
+  // we just baked into the cache has to be re-blitted on top each frame
+  // anyway. Cheap (one icon vs six) and only runs when an item is selected.
+  if (menuSelectedIndex >= 0 && menuSelectedIndex < kHomeMenuCount) {
+    const int cellCenterX = iconCellCenterX(menuSelectedIndex);
+    const int cellX = cellCenterX - iconCellSize / 2;
+    renderer.fillRoundedRect(cellX, iconCellTopY, iconCellSize, iconCellSize, 6, Color::LightGray);
+    drawSingleMenuIcon(menuSelectedIndex);
   }
 
   const auto labels = mappedInput.mapLabels("", tr(STR_SELECT), tr(STR_DIR_PREV), tr(STR_DIR_NEXT));

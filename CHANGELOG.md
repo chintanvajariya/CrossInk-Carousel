@@ -1,5 +1,23 @@
 # Changelog
 
+## [v1.2.11.2] - 2026-05-19
+
+### Changed
+- Flow carousel: selected-cover outline now stays on the centered cover even after the cursor moves into the bottom menu strip, so the carousel area no longer repaints on every carousel↔menu transition.
+- Flow carousel: progress bar now hugs the actual cover bottom (covers with non-3:5 aspect ratios no longer leave a dead gap above the bar). Time text follows the bar to keep the bar↔time spacing constant; title/author stays slot-anchored so the text rhythm is unchanged.
+- X4 only: bumped `topPadding` by 6 px so every header rect and the content rows below it sit a consistent distance below the lowered battery bar.
+- Reduced bar↔time spacing by 2 px to compensate for the always-on selection outline pulling the bar visually closer to the cover.
+
+### Added
+- Memory-backed `Bitmap` reads: the home carousel now slurps each thumb file into RAM once at home enter (capped at 32 KB per entry) and reads through the cached bytes on subsequent scrolls — eliminates per-scroll SD opens and shaves ~50–75 ms off cover-to-cover transitions.
+- Robust fallback chain in `UITheme::getCoverThumbPath`: exact `thumb_WxH.bmp` → legacy `thumb_H.bmp` → any other `thumb_*.bmp` in the book's cache dir → `cover.bmp` → exact path for generation. Picks up stale thumbs from earlier firmware sizes instead of falling through to the solid-black silhouette.
+- Self-healing recents state: `loadRecentCovers` and `RecentBooksGridActivity` no longer persist `coverBmpPath = ""` on a transient `generateThumbBmp` failure; the next pass re-derives the template via `RECENT_BOOKS.getDataFromBook(...)` and retries, so heap-pressure failures no longer strand books in the no-cover state forever.
+
+### Fixed
+- Flow carousel: cover↔menu transitions were re-rendering the whole carousel because `carouselDisplayIndex` encoded mode into the cache key (`recentCount + lastBookIndex` vs `selectorIndex`). Replaced with a mode-invariant `centeredBookIdx` so the cover-buffer cache survives every carousel↔menu toggle.
+- Flow carousel: side covers on X4 sat too far right and overflowed the screen edge — right-side X positions now mirror from the screen's right edge so the stack is symmetric on both the 528-px X3 and the 480-px X4.
+- Cover rendering: `drawBitmap1Bit` now supports upscaling, not just downscaling. Small thumbnails (legacy cached sizes, or books with tiny source JPEGs) used to render at 1:1 in the top-left of an oversized slot — they now fill the slot the caller asked for.
+
 ## [v1.2.11.1] - 2026-05-16
 
 ### Added

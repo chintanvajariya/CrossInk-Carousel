@@ -1253,16 +1253,26 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
 
 void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y, const int maxWidth,
                                  const int maxHeight) const {
+  // Fit scale: a single ratio that maps source dims to the caller's max box.
+  // We fit-to-largest so the bitmap reaches whichever of maxWidth/maxHeight
+  // its aspect ratio hits first; the other dim stays ≤ max. Crucially this
+  // supports UPSCALE (scale > 1) for small bitmaps, not just downscale —
+  // previously a thumb smaller than the caller's max box rendered at 1:1
+  // in the top-left corner of an oversized slot (visible in the carousel
+  // when a book's source JPEG was tiny or a legacy thumb_*.bmp had survived
+  // a firmware bump).
   float scale = 1.0f;
   bool isScaled = false;
-  if (maxWidth > 0 && bitmap.getWidth() > maxWidth) {
-    scale = static_cast<float>(maxWidth) / static_cast<float>(bitmap.getWidth());
-    isScaled = true;
+  if (maxWidth > 0 && maxHeight > 0 && bitmap.getWidth() > 0 && bitmap.getHeight() > 0) {
+    const float scaleW = static_cast<float>(maxWidth) / static_cast<float>(bitmap.getWidth());
+    const float scaleH = static_cast<float>(maxHeight) / static_cast<float>(bitmap.getHeight());
+    const float fitScale = std::min(scaleW, scaleH);
+    if (fitScale < 0.999f || fitScale > 1.001f) {
+      scale = fitScale;
+      isScaled = true;
+    }
   }
-  if (maxHeight > 0 && bitmap.getHeight() > maxHeight) {
-    scale = std::min(scale, static_cast<float>(maxHeight) / static_cast<float>(bitmap.getHeight()));
-    isScaled = true;
-  }
+  const bool upscaling = isScaled && scale > 1.0f;
 
   BitmapScratchLock scratchLock(*this);
   if (!scratchLock.isLocked()) return;
@@ -1284,32 +1294,45 @@ void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y,
 
     // Calculate screen Y based on whether BMP is top-down or bottom-up
     const int bmpYOffset = bitmap.isTopDown() ? bmpY : bitmap.getHeight() - 1 - bmpY;
+    // For upscale we paint a vertical BLOCK of destination rows per source row
+    // (nearest-neighbor); for downscale and 1:1 we paint a single destination
+    // row (same as the prior behavior — keeps thin horizontal lines visible
+    // across downscale because multiple source rows OR into one dest row).
+    const int dstY0 = upscaling ? y + static_cast<int>(std::floor(bmpYOffset * scale)) : -1;
+    const int dstY1 = upscaling ? y + static_cast<int>(std::floor((bmpYOffset + 1) * scale)) : -1;
     int screenY = y + (isScaled ? static_cast<int>(std::floor(bmpYOffset * scale)) : bmpYOffset);
-    if (screenY >= getScreenHeight()) {
-      continue;  // Continue reading to keep row counter in sync
-    }
-    if (screenY < 0) {
+    if (!upscaling) {
+      if (screenY >= getScreenHeight()) continue;
+      if (screenY < 0) continue;
+    } else if (dstY0 >= getScreenHeight() || dstY1 <= 0) {
       continue;
     }
 
     for (int bmpX = 0; bmpX < bitmap.getWidth(); bmpX++) {
-      int screenX = x + (isScaled ? static_cast<int>(std::floor(bmpX * scale)) : bmpX);
-      if (screenX >= getScreenWidth()) {
-        break;
-      }
-      if (screenX < 0) {
-        continue;
-      }
-
-      // Get 2-bit value (result of readNextRow quantization)
+      // Get 2-bit value (result of readNextRow quantization). val < 3 = black.
       const uint8_t val = outputRow[bmpX / 4] >> (6 - ((bmpX * 2) % 8)) & 0x3;
+      if (val >= 3) continue;  // white — leave background
 
-      // For 1-bit source: 0 or 1 -> map to black (0,1,2) or white (3)
-      // val < 3 means black pixel (draw it)
-      if (val < 3) {
+      if (upscaling) {
+        const int dstX0 = x + static_cast<int>(std::floor(bmpX * scale));
+        const int dstX1 = x + static_cast<int>(std::floor((bmpX + 1) * scale));
+        if (dstX0 >= getScreenWidth()) break;
+        if (dstX1 <= 0) continue;
+        const int yLo = std::max(dstY0, 0);
+        const int yHi = std::min(dstY1, getScreenHeight());
+        const int xLo = std::max(dstX0, 0);
+        const int xHi = std::min(dstX1, getScreenWidth());
+        for (int dy = yLo; dy < yHi; dy++) {
+          for (int dx = xLo; dx < xHi; dx++) {
+            drawPixel(dx, dy, true);
+          }
+        }
+      } else {
+        const int screenX = x + (isScaled ? static_cast<int>(std::floor(bmpX * scale)) : bmpX);
+        if (screenX >= getScreenWidth()) break;
+        if (screenX < 0) continue;
         drawPixel(screenX, screenY, true);
       }
-      // White pixels (val == 3) are not drawn (leave background)
     }
   }
 }

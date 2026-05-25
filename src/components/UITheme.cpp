@@ -3,6 +3,7 @@
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
+#include <HalStorage.h>
 #include <Logging.h>
 
 #include <memory>
@@ -22,6 +23,52 @@ constexpr char kWidthPlaceholder[] = "[WIDTH]";
 constexpr char kHeightPlaceholder[] = "[HEIGHT]";
 constexpr size_t kWidthPlaceholderLength = sizeof(kWidthPlaceholder) - 1;
 constexpr size_t kHeightPlaceholderLength = sizeof(kHeightPlaceholder) - 1;
+
+// Returns the first existing `thumb_*.bmp` (or `cover.bmp`) in the book's
+// cache directory, or an empty string if none are usable. Used as a last
+// resort when neither the exact-dimensions thumb nor the legacy height-only
+// thumb exists — picking up a stale thumb from an earlier firmware version
+// is strictly better than the solid-black silhouette we'd otherwise draw.
+//
+// `exactPath` is the WxH thumb path we just confirmed doesn't exist; we
+// derive the cache directory from it and scan that directory only — never
+// the whole `.crosspoint/` tree, which would be O(books × files).
+std::string findFallbackThumbInCacheDir(const std::string& exactPath) {
+  const size_t lastSlash = exactPath.find_last_of('/');
+  if (lastSlash == std::string::npos || lastSlash == 0) return "";
+  const std::string cacheDir = exactPath.substr(0, lastSlash);
+  if (!Storage.exists(cacheDir.c_str())) return "";
+
+  // Prefer cover.bmp first if present — it's the full 2-bit cover the reader
+  // generates on first open, so it always reflects the current book even if
+  // every thumb_*.bmp on disk is from an older firmware's size scheme.
+  const std::string coverFallback = cacheDir + "/cover.bmp";
+  if (Storage.exists(coverFallback.c_str())) return coverFallback;
+
+  // Otherwise scan for any thumb_*.bmp. Don't pick a specific dimension —
+  // the renderer will scale whatever it finds. We just want SOMETHING valid.
+  auto dir = Storage.open(cacheDir.c_str());
+  if (!dir || !dir.isDirectory()) {
+    if (dir) dir.close();
+    return "";
+  }
+  std::string found;
+  char name[64];
+  for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
+    file.getName(name, sizeof(name));
+    const std::string entryName(name);
+    file.close();
+    // Match `thumb_*.bmp` only — skip `.cover.jpg`/`.cover.png` temp files,
+    // book.bin, css_rules.cache, progress.bin, etc.
+    if (entryName.rfind("thumb_", 0) == 0 && entryName.size() > 4 &&
+        entryName.compare(entryName.size() - 4, 4, ".bmp") == 0) {
+      found = cacheDir + "/" + entryName;
+      break;
+    }
+  }
+  dir.close();
+  return found;
+}
 }  // namespace
 
 UITheme UITheme::instance;
@@ -114,6 +161,37 @@ std::string UITheme::getCoverThumbPath(const std::string& coverBmpPath, int cove
   return getCoverThumbPath(coverBmpPath, coverWidth, coverHeight);
 }
 
+std::string UITheme::resolveExactCoverThumbPath(const std::string& coverBmpPath, int coverHeight) {
+  if (coverHeight <= 0) return "";
+  const int coverWidth = static_cast<int>((static_cast<int64_t>(coverHeight) * 3 + 2) / 5);
+  // No-placeholder paths are taken as-is — caller already supplied a concrete
+  // filename.
+  const size_t widthPos = coverBmpPath.find(kWidthPlaceholder);
+  const size_t heightPos = coverBmpPath.find(kHeightPlaceholder);
+  if (widthPos == std::string::npos && heightPos == std::string::npos) {
+    return coverBmpPath;
+  }
+  if (heightPos == std::string::npos) return "";
+
+  std::string out = coverBmpPath;
+  if (widthPos != std::string::npos) {
+    out.replace(widthPos, kWidthPlaceholderLength, std::to_string(coverWidth));
+  }
+  const size_t pos = out.find(kHeightPlaceholder);
+  if (pos != std::string::npos) {
+    if (widthPos != std::string::npos) {
+      // [WIDTH]x[HEIGHT] template → substitute [HEIGHT] with H.
+      out.replace(pos, kHeightPlaceholderLength, std::to_string(coverHeight));
+    } else {
+      // Legacy [HEIGHT]-only template → expand to W×H so loadRecentCovers
+      // gets a unique path per requested size (Flow at 392 and Minimal at
+      // 583 should each generate their own thumb rather than sharing).
+      out.replace(pos, kHeightPlaceholderLength, std::to_string(coverWidth) + "x" + std::to_string(coverHeight));
+    }
+  }
+  return out;
+}
+
 std::string UITheme::getCoverThumbPath(const std::string& coverBmpPath, int width, int height) {
   if (width <= 0 || height <= 0) {
     return "";
@@ -136,24 +214,53 @@ std::string UITheme::getCoverThumbPath(const std::string& coverBmpPath, int widt
     return "";
   }
 
+  // Build the exact W×H path (the preferred file the renderer will look for).
   std::string thumbPath = coverBmpPath;
-  size_t widthPos = thumbPath.find(kWidthPlaceholder, 0);
-  if (widthPos != std::string::npos) {
+  if (hasWidthPlaceholder) {
+    const size_t widthPos = thumbPath.find(kWidthPlaceholder, 0);
     thumbPath.replace(widthPos, kWidthPlaceholderLength, std::to_string(width));
   }
-  size_t pos = thumbPath.find(kHeightPlaceholder, 0);
+  const size_t pos = thumbPath.find(kHeightPlaceholder, 0);
   if (pos != std::string::npos) {
     if (hasWidthPlaceholder) {
+      // Template was `…thumb_[WIDTH]x[HEIGHT].bmp` → substitute `[HEIGHT]`.
       thumbPath.replace(pos, kHeightPlaceholderLength, std::to_string(height));
     } else {
-      std::string legacyPath = thumbPath;
-      legacyPath.replace(pos, kHeightPlaceholderLength, std::to_string(height));
+      // Template was legacy `…thumb_[HEIGHT].bmp` → substitute as W×H so the
+      // current build's exact path is generated (legacy form acts as fallback
+      // below).
       thumbPath.replace(pos, kHeightPlaceholderLength, std::to_string(width) + "x" + std::to_string(height));
-      if (!Storage.exists(thumbPath.c_str()) && Storage.exists(legacyPath.c_str())) {
-        return legacyPath;
-      }
     }
   }
+
+  // Also build the legacy `thumb_<H>.bmp` path so we can pick it up if the
+  // exact W×H file isn't on disk yet. Reading from coverBmpPath directly
+  // (rather than mutating the already-substituted thumbPath) makes this
+  // robust regardless of which template style the book was saved with.
+  std::string legacyPath = coverBmpPath;
+  if (hasWidthPlaceholder) {
+    // Drop "[WIDTH]x" (or "[WIDTH]" if there's no separator) so the legacy
+    // filename collapses to `thumb_<H>.bmp`. Only consume the 'x' when it's
+    // actually present, so unrelated templates aren't corrupted.
+    const size_t widthPos = legacyPath.find(kWidthPlaceholder, 0);
+    size_t eraseLen = kWidthPlaceholderLength;
+    if (widthPos + kWidthPlaceholderLength < legacyPath.size() &&
+        legacyPath[widthPos + kWidthPlaceholderLength] == 'x') {
+      eraseLen += 1;
+    }
+    legacyPath.erase(widthPos, eraseLen);
+  }
+  const size_t legacyHeightPos = legacyPath.find(kHeightPlaceholder, 0);
+  if (legacyHeightPos != std::string::npos) {
+    legacyPath.replace(legacyHeightPos, kHeightPlaceholderLength, std::to_string(height));
+  }
+
+  // Resolution chain: exact W×H → legacy H-only → any thumb in cache dir →
+  // cover.bmp (full-size 2-bit) → exact path (for generation).
+  if (Storage.exists(thumbPath.c_str())) return thumbPath;
+  if (legacyPath != thumbPath && Storage.exists(legacyPath.c_str())) return legacyPath;
+  const std::string fallback = findFallbackThumbInCacheDir(thumbPath);
+  if (!fallback.empty()) return fallback;
   return thumbPath;
 }
 

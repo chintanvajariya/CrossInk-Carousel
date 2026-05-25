@@ -35,6 +35,13 @@ class HomeActivity final : public Activity {
   // when it doesn't match the book about to be drawn.
   int coverBufferBookIdx = -1;
   int pendingCoverBufferBookIdx = -1;
+  // True when the cover buffer cache currently includes the home menu icon
+  // strip pixels (drawn by render() AFTER the theme's drawRecentBookCover).
+  // The theme caches covers+chrome only; HomeActivity re-caches over that
+  // capture with the icons baked in, so subsequent menu↔carousel toggles can
+  // restoreCoverBuffer once and skip the per-frame icon redraw.
+  // Reset by freeCoverBuffer() so any invalidation forces a fresh icon pass.
+  bool homeMenuIconsCached = false;
   // Minimal-theme home UX state (upstream parity). The Minimal home shows a
   // 4-slot front-button hint row (MENU / BROWSE / SETTINGS / READ); pressing
   // MENU opens an overlay containing buildMinimalMenuItems(). On theme switch
@@ -57,6 +64,17 @@ class HomeActivity final : public Activity {
   // so the Flow theme's per-book progress bar can update as the user scrolls
   // the carousel without on-demand file I/O.
   std::vector<float> recentBookProgress;
+  // RAM-cached thumbnail BMP bytes, indexed parallel to recentBooks. Slurped
+  // off the SD card once at the end of loadRecentCovers so the per-render
+  // carousel render uses a memory-backed Bitmap and avoids 5 file opens +
+  // sequential reads on every scroll. Empty when caching failed (file too
+  // large, OOM, etc.) — the theme falls back to file-backed reads in that
+  // case. Cap per-entry size with kMaxThumbCacheBytes to bound RAM use.
+  std::vector<std::vector<uint8_t>> recentBookThumbData;
+  // Per-thumb cap. Lowered from 32 KB to 24 KB so even a tightly fragmented
+  // heap at first-home-enter has a reasonable shot at the contiguous block.
+  static constexpr size_t kMaxThumbCacheBytes = 24 * 1024;
+  void loadRecentThumbsToRam(int coverHeight);
   void onSelectBook(const std::string& path);
   void onContinueReading();
   void onFileBrowserOpen();

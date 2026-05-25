@@ -471,7 +471,8 @@ void BaseTheme::drawTabBar(const GfxRenderer& renderer, const Rect rect, const s
 void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                     int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                     bool& bufferRestored, const std::function<bool()>& storeCoverBuffer,
-                                    const BookReadingStats* /*stats*/, float /*progressPercent*/) const {
+                                    const BookReadingStats* /*stats*/, float /*progressPercent*/,
+                                    const std::vector<std::vector<uint8_t>>* /*thumbDataBuffers*/) const {
   const bool hasContinueReading = !recentBooks.empty();
   const bool bookSelected = hasContinueReading && selectorIndex == 0;
 
