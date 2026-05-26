@@ -14,6 +14,7 @@
 
 #include "RecentBooksStore.h"
 #include "activities/reader/BookReadingStats.h"
+#include "activities/reader/GlobalReadingStats.h"
 #include "components/UITheme.h"
 #include "components/icons/book.h"
 #include "components/icons/chart.h"
@@ -416,8 +417,55 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
       const int w = renderer.getTextWidth(SMALL_FONT_ID, elapsedBuf);
       renderer.drawText(SMALL_FONT_ID, centerX - w / 2, timeReadY, elapsedBuf, true);
     } else {
-      const float projectedSecsF = static_cast<float>(elapsedSecs) * 100.0f / progressPercent;
-      const uint32_t projectedSecs = static_cast<uint32_t>(projectedSecsF + 0.5f);
+      // Project total reading time. Two signals are available:
+      //   (1) percent-based: elapsed × 100 / progressPercent. Naive — breaks
+      //       when the user uses the chapter selector to skip the preface /
+      //       intro / TOC, because progressPercent jumps several points in
+      //       seconds. That ratio dominates the projection until enough real
+      //       reading accumulates to wash it out, so an 8h book briefly
+      //       projects as ~1h.
+      //   (2) global-average: lifetime totalReadingSeconds / completedBooks.
+      //       Independent of this book's % so chapter jumps don't pollute it.
+      //
+      // Strategy: use (2) while this book is "cold" (under COLD_START_SECS of
+      // real reading). Once enough reading has accumulated to drown out the
+      // jump artifact, switch to (1). When per-book turn data is available,
+      // refine the global estimate with the user's pages/sec on this book vs.
+      // their lifetime rate — captures dense vs. light books.
+      constexpr uint32_t COLD_START_SECS = 10 * 60;
+      uint32_t projectedSecs = 0;
+
+      const GlobalReadingStats global = GlobalReadingStats::load();
+      const bool haveGlobalAvg = (global.completedBooks >= 2 && global.totalReadingSeconds > 0);
+      const bool bookCold = (elapsedSecs < COLD_START_SECS);
+
+      if (bookCold && haveGlobalAvg) {
+        const float avgBookSecsF =
+            static_cast<float>(global.totalReadingSeconds) / static_cast<float>(global.completedBooks);
+
+        // Refine with this book's pages/sec when there's enough sample to
+        // trust it (>30s of reading and at least one turn). Page-turn count
+        // survives chapter jumps — one jump = one navigation event, not
+        // N pages of inflated turns — so this rate is robust here.
+        float scaledSecsF = avgBookSecsF;
+        if (stats != nullptr && stats->totalPagesTurned > 0 && stats->totalReadingSeconds >= 30 &&
+            global.totalPagesTurned > 0) {
+          const float globalPagesPerSec =
+              static_cast<float>(global.totalPagesTurned) / static_cast<float>(global.totalReadingSeconds);
+          const float bookPagesPerSec =
+              static_cast<float>(stats->totalPagesTurned) / static_cast<float>(stats->totalReadingSeconds);
+          if (bookPagesPerSec > 0.0f) {
+            // speedRatio > 1 → user is slower on this book → project longer.
+            const float speedRatio = globalPagesPerSec / bookPagesPerSec;
+            scaledSecsF = avgBookSecsF * speedRatio;
+          }
+        }
+        projectedSecs = static_cast<uint32_t>(scaledSecsF + 0.5f);
+      } else {
+        const float projectedSecsF = static_cast<float>(elapsedSecs) * 100.0f / progressPercent;
+        projectedSecs = static_cast<uint32_t>(projectedSecsF + 0.5f);
+      }
+
       char projectedBuf[12];
       formatHMM(projectedSecs, projectedBuf, sizeof(projectedBuf));
       const int projW = renderer.getTextWidth(SMALL_FONT_ID, projectedBuf);
