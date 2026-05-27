@@ -453,6 +453,8 @@ void HomeActivity::loadRecentThumbsToRam(int coverHeight) {
   // any stale buffers (e.g. after a recents reshuffle).
   recentBookThumbData.clear();
   recentBookThumbData.resize(recentBooks.size());
+  recentBookDecodedThumbs.clear();
+  recentBookDecodedThumbs.resize(recentBooks.size());
 
   for (size_t i = 0; i < recentBooks.size(); ++i) {
     const auto& book = recentBooks[i];
@@ -499,7 +501,22 @@ void HomeActivity::loadRecentThumbsToRam(int coverHeight) {
       buf.shrink_to_fit();
       LOG_ERR("HOME", "Thumb %s partial RAM read (%d / %u)", resolvedPath.c_str(), bytesRead,
               static_cast<unsigned>(fileSize));
+      continue;
     }
+
+    // Pre-decode the BMP into a flat 1-bit grid so the per-render carousel
+    // path can skip the BMP header parse + per-row 2-bit quantization on
+    // every scroll. Failures here are non-fatal — the byte cache above is
+    // the fallback. We allocate up-front based on the source dimensions so
+    // a failed decode doesn't leave half a grid populated.
+    Bitmap bitmap(buf.data(), buf.size());
+    if (bitmap.parseHeaders() != BmpReaderError::Ok) continue;
+    const size_t gridBytes = static_cast<size_t>((bitmap.getWidth() + 7) / 8) * static_cast<size_t>(bitmap.getHeight());
+    // Heap headroom check — same rationale as the byte slurp above. A failed
+    // decode falls through to the byte-cache rendering path.
+    constexpr size_t kDecodeAllocHeadroom = 4 * 1024;
+    if (ESP.getMaxAllocHeap() < gridBytes + kDecodeAllocHeadroom) continue;
+    (void)renderer.decodeBitmapTo1BitGrid(bitmap, recentBookDecodedThumbs[i]);
   }
 }
 
@@ -973,7 +990,7 @@ void HomeActivity::render(RenderLock&&) {
   GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
                           recentBooks, centeredBookIdx, coverRendered, coverBufferStored, bufferRestored,
                           std::bind(&HomeActivity::storeCoverBuffer, this), centeredBookStats,
-                          centeredBookProgress, &recentBookThumbData);
+                          centeredBookProgress, &recentBookThumbData, &recentBookDecodedThumbs);
 
   const int menuSelectedIndex =
       (selectorIndex >= recentBooks.size()) ? static_cast<int>(selectorIndex - recentBooks.size()) : -1;

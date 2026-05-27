@@ -472,7 +472,8 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
                                     int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                     bool& bufferRestored, const std::function<bool()>& storeCoverBuffer,
                                     const BookReadingStats* /*stats*/, float /*progressPercent*/,
-                                    const std::vector<std::vector<uint8_t>>* /*thumbDataBuffers*/) const {
+                                    const std::vector<std::vector<uint8_t>>* /*thumbDataBuffers*/,
+                                    const std::vector<DecodedThumb>* /*decodedThumbs*/) const {
   const bool hasContinueReading = !recentBooks.empty();
   const bool bookSelected = hasContinueReading && selectorIndex == 0;
 

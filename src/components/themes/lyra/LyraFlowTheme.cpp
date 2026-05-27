@@ -104,7 +104,8 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
                                         int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                         bool& bufferRestored, const std::function<bool()>& storeCoverBuffer,
                                         const BookReadingStats* stats, float progressPercent,
-                                        const std::vector<std::vector<uint8_t>>* thumbDataBuffers) const {
+                                        const std::vector<std::vector<uint8_t>>* thumbDataBuffers,
+                                        const std::vector<DecodedThumb>* decodedThumbs) const {
   // Returns a Bitmap reading from the RAM thumb cache when present, else
   // falls back to a fresh SD open via `fallbackOpen`. The carousel render
   // path uses this to dodge a per-render `Storage.openFileForRead` × 5 plus
@@ -117,6 +118,17 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
     const auto& buf = (*thumbDataBuffers)[idx];
     if (buf.empty()) return nullptr;
     return &buf;
+  };
+  // Same accessor pattern for the pre-decoded 1-bit grids. When available, the
+  // render path uses drawBitmap1BitFromGrid / drawPerspectiveFromGrid and
+  // skips parseHeaders + readNextRow + 2-bit quantization entirely. Falls
+  // through to the byte-cache / file path when the grid is unavailable.
+  auto decodedGridFor = [decodedThumbs](int idx) -> const DecodedThumb* {
+    if (decodedThumbs == nullptr) return nullptr;
+    if (idx < 0 || idx >= static_cast<int>(decodedThumbs->size())) return nullptr;
+    const auto& grid = (*decodedThumbs)[idx];
+    if (!grid.valid()) return nullptr;
+    return &grid;
   };
   if (recentBooks.empty()) {
     drawEmptyRecents(renderer, rect);
@@ -178,14 +190,23 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
     const int drawY = centerY + (centerCoverHeight / 2) - (hMax / 2);
 
     bool drawn = false;
-    // Fast path: RAM-cached thumbnail bytes (slurped at home enter). Skips
-    // the SD open + sequential read for the four side covers.
-    if (const std::vector<uint8_t>* memBuf = thumbBufferFor(idx)) {
-      Bitmap bitmap(memBuf->data(), memBuf->size());
-      if (bitmap.parseHeaders() == BmpReaderError::Ok) {
-        renderer.fillRect(drawX, drawY, sideCoverWidth, hMax, false);
-        renderer.drawPerspectiveBitmap(bitmap, drawX, drawY, sideCoverWidth, hL, hR);
-        drawn = true;
+    // Fastest path: pre-decoded 1-bit grid (decoded once at home enter, no
+    // BMP parse or row-quantization per render).
+    if (const DecodedThumb* grid = decodedGridFor(idx)) {
+      renderer.fillRect(drawX, drawY, sideCoverWidth, hMax, false);
+      renderer.drawPerspectiveFromGrid(*grid, drawX, drawY, sideCoverWidth, hL, hR);
+      drawn = true;
+    }
+    // Fast path: RAM-cached thumbnail bytes (slurped at home enter). Used when
+    // the pre-decode didn't fit / failed. Still skips the SD open per render.
+    if (!drawn) {
+      if (const std::vector<uint8_t>* memBuf = thumbBufferFor(idx)) {
+        Bitmap bitmap(memBuf->data(), memBuf->size());
+        if (bitmap.parseHeaders() == BmpReaderError::Ok) {
+          renderer.fillRect(drawX, drawY, sideCoverWidth, hMax, false);
+          renderer.drawPerspectiveBitmap(bitmap, drawX, drawY, sideCoverWidth, hL, hR);
+          drawn = true;
+        }
       }
     }
     // Slow path: open the BMP from SD. Used until the RAM cache is populated
@@ -275,31 +296,42 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
   //     for narrower covers, e.g. 1720×2600 which is taller than 220:320). ---
   int actualCoverWidth = centerCoverWidth;
   int actualCoverHeight = centerCoverHeight;
-  // Center cover: same fast-path / slow-path split as the side covers above.
-  // The Bitmap is heap-allocated so the memory- and file-backed variants can
-  // share the rest of the rendering code below uniformly.
+  // Center cover: pre-decoded grid → RAM byte cache → SD file. Each tier
+  // shaves a chunk of per-render cost; only the lowest tier (SD file) does
+  // real I/O.
+  const DecodedThumb* centerGrid = decodedGridFor(curIdx);
+  int centerSrcW = 0;
+  int centerSrcH = 0;
   FsFile cf;
   bool centerOpenedFile = false;
   std::unique_ptr<Bitmap> centerBitmap;
-  if (const std::vector<uint8_t>* memBuf = thumbBufferFor(curIdx)) {
-    centerBitmap = std::unique_ptr<Bitmap>(new Bitmap(memBuf->data(), memBuf->size()));
+  bool centerParsed = false;
+  if (centerGrid != nullptr) {
+    centerSrcW = centerGrid->width;
+    centerSrcH = centerGrid->height;
+    centerParsed = true;
   } else {
-    const std::string cp = UITheme::getCoverThumbPath(recentBooks[curIdx].coverBmpPath, centerCoverHeight);
-    if (!cp.empty() && Storage.openFileForRead("HOME", cp, cf)) {
-      centerOpenedFile = true;
-      centerBitmap = std::unique_ptr<Bitmap>(new Bitmap(cf));
+    if (const std::vector<uint8_t>* memBuf = thumbBufferFor(curIdx)) {
+      centerBitmap = std::unique_ptr<Bitmap>(new Bitmap(memBuf->data(), memBuf->size()));
+    } else {
+      const std::string cp = UITheme::getCoverThumbPath(recentBooks[curIdx].coverBmpPath, centerCoverHeight);
+      if (!cp.empty() && Storage.openFileForRead("HOME", cp, cf)) {
+        centerOpenedFile = true;
+        centerBitmap = std::unique_ptr<Bitmap>(new Bitmap(cf));
+      }
+    }
+    if (centerBitmap && centerBitmap->parseHeaders() == BmpReaderError::Ok && centerBitmap->getWidth() > 0 &&
+        centerBitmap->getHeight() > 0) {
+      centerSrcW = centerBitmap->getWidth();
+      centerSrcH = centerBitmap->getHeight();
+      centerParsed = true;
     }
   }
-  bool centerParsed = false;
-  if (centerBitmap && centerBitmap->parseHeaders() == BmpReaderError::Ok && centerBitmap->getWidth() > 0 &&
-      centerBitmap->getHeight() > 0) {
-    const int srcW = centerBitmap->getWidth();
-    const int srcH = centerBitmap->getHeight();
-    const float fitScale = std::min(static_cast<float>(centerCoverWidth) / static_cast<float>(srcW),
-                                    static_cast<float>(centerCoverHeight) / static_cast<float>(srcH));
-    actualCoverWidth = std::min(centerCoverWidth, static_cast<int>(std::round(srcW * fitScale)));
-    actualCoverHeight = std::min(centerCoverHeight, static_cast<int>(std::round(srcH * fitScale)));
-    centerParsed = true;
+  if (centerParsed) {
+    const float fitScale = std::min(static_cast<float>(centerCoverWidth) / static_cast<float>(centerSrcW),
+                                    static_cast<float>(centerCoverHeight) / static_cast<float>(centerSrcH));
+    actualCoverWidth = std::min(centerCoverWidth, static_cast<int>(std::round(centerSrcW * fitScale)));
+    actualCoverHeight = std::min(centerCoverHeight, static_cast<int>(std::round(centerSrcH * fitScale)));
   }
 
   const int cX = centerX - actualCoverWidth / 2;
@@ -311,7 +343,11 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
   renderer.fillRect(cX, actualY, actualCoverWidth, actualCoverHeight, false);
 
   if (centerParsed) {
-    renderer.drawBitmap(*centerBitmap, cX, actualY, actualCoverWidth, actualCoverHeight);
+    if (centerGrid != nullptr) {
+      renderer.drawBitmap1BitFromGrid(*centerGrid, cX, actualY, actualCoverWidth, actualCoverHeight);
+    } else {
+      renderer.drawBitmap(*centerBitmap, cX, actualY, actualCoverWidth, actualCoverHeight);
+    }
     cutRoundedCorners(renderer, cX, actualY, actualCoverWidth, actualCoverHeight, bookCornerRadius);
   } else {
     // Placeholder: black lower-2/3 with the cover icon, matches reference fallback.

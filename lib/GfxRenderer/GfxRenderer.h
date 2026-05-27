@@ -20,6 +20,22 @@ class SdCardFont;
 // 0 = transparent, 1-16 = gray levels (white to black)
 enum Color : uint8_t { Clear = 0x00, White = 0x01, LightGray = 0x05, DarkGray = 0x0A, Black = 0x10 };
 
+// Pre-decoded 1-bit bitmap, packed MSB-first by row. Allows the home carousel
+// to skip the BMP header parse + per-row quantization on every scroll: decode
+// each thumb once at home-enter, then blit from a flat in-RAM grid.
+//
+// Bit interpretation matches the framebuffer: 1 = black, 0 = white. Width is
+// the source bitmap's natural pixel width (no scaling — scale happens at blit
+// time in drawBitmap1BitFromGrid / drawPerspectiveFromGrid).
+struct DecodedThumb {
+  std::vector<uint8_t> bits;
+  int width = 0;
+  int height = 0;
+  int rowBytes = 0;  // (width + 7) / 8
+  bool topDown = false;
+  bool valid() const { return !bits.empty() && width > 0 && height > 0 && rowBytes > 0; }
+};
+
 class GfxRenderer {
  public:
   enum RenderMode { BW, GRAYSCALE_LSB, GRAYSCALE_MSB };
@@ -185,6 +201,15 @@ class GfxRenderer {
   // Trapezoidal blit used by Flow/iPod-style carousels. Fits the bitmap into a
   // bounding box of width `w` and height `max(hL, hR)` whose top-left is (x, y).
   void drawPerspectiveBitmap(const Bitmap& bitmap, int x, int y, int w, int hL, int hR) const;
+  // One-shot decode of a 1-bit BMP into a flat in-RAM grid. Caller keeps the
+  // DecodedThumb and feeds it back to drawBitmap1BitFromGrid /
+  // drawPerspectiveFromGrid on every render — skipping the parse + readNextRow
+  // overhead. Returns true on success; out.valid() reflects the result.
+  bool decodeBitmapTo1BitGrid(Bitmap& bitmap, DecodedThumb& out) const;
+  // Drop-in replacements for drawBitmap1Bit / drawPerspectiveBitmap that read
+  // from a pre-decoded grid. Same pixel output as the Bitmap variants.
+  void drawBitmap1BitFromGrid(const DecodedThumb& grid, int x, int y, int maxWidth, int maxHeight) const;
+  void drawPerspectiveFromGrid(const DecodedThumb& grid, int x, int y, int w, int hL, int hR) const;
   void fillPolygon(const int* xPoints, const int* yPoints, int numPoints, bool state = true) const;
 
   // Text

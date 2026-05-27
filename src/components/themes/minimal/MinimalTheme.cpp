@@ -453,7 +453,8 @@ void MinimalTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const s
                                        int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                        bool& bufferRestored, const std::function<bool()>& storeCoverBuffer,
                                        const BookReadingStats* stats, float progressPercent,
-                                       const std::vector<std::vector<uint8_t>>* /*thumbDataBuffers*/) const {
+                                       const std::vector<std::vector<uint8_t>>* /*thumbDataBuffers*/,
+                                       const std::vector<DecodedThumb>* /*decodedThumbs*/) const {
   (void)selectorIndex;
   (void)bufferRestored;
 

@@ -503,7 +503,8 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
                                     int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                     bool& bufferRestored, const std::function<bool()>& storeCoverBuffer,
                                     const BookReadingStats* stats, float progressPercent,
-                                    const std::vector<std::vector<uint8_t>>* /*thumbDataBuffers*/) const {
+                                    const std::vector<std::vector<uint8_t>>* /*thumbDataBuffers*/,
+                                    const std::vector<DecodedThumb>* /*decodedThumbs*/) const {
   const int tileWidth = rect.width - 2 * LyraMetrics::values.contentSidePadding;
   const int tileHeight = rect.height;
   const int tileY = rect.y;

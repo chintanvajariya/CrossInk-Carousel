@@ -22,7 +22,8 @@ void Lyra3CoversTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
                                            int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                            bool& bufferRestored, const std::function<bool()>& storeCoverBuffer,
                                            const BookReadingStats* /*stats*/, float /*progressPercent*/,
-                                           const std::vector<std::vector<uint8_t>>* /*thumbDataBuffers*/) const {
+                                           const std::vector<std::vector<uint8_t>>* /*thumbDataBuffers*/,
+                                           const std::vector<DecodedThumb>* /*decodedThumbs*/) const {
   const int tileWidth = (rect.width - 2 * Lyra3CoversMetrics::values.contentSidePadding) / 3;
   const int tileY = rect.y;
   const bool hasContinueReading = !recentBooks.empty();

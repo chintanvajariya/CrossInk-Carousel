@@ -111,7 +111,8 @@ void RoundedRaffTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
                                            int selectorIndex, bool& coverRendered, bool& coverBufferStored,
                                            bool& bufferRestored, const std::function<bool()>& storeCoverBuffer,
                                            const BookReadingStats* stats, float progressPercent,
-                                           const std::vector<std::vector<uint8_t>>* /*thumbDataBuffers*/) const {
+                                           const std::vector<std::vector<uint8_t>>* /*thumbDataBuffers*/,
+                                           const std::vector<DecodedThumb>* /*decodedThumbs*/) const {
   (void)stats;
   (void)progressPercent;
   (void)selectorIndex;

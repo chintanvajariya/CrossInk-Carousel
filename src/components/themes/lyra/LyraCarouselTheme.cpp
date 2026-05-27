@@ -185,7 +185,8 @@ void LyraCarouselTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect,
                                             bool& coverRendered, bool& coverBufferStored, bool& bufferRestored,
                                             const std::function<bool()>& storeCoverBuffer,
                                             const BookReadingStats* stats, float progressPercent,
-                                            const std::vector<std::vector<uint8_t>>* /*thumbDataBuffers*/) const {
+                                            const std::vector<std::vector<uint8_t>>* /*thumbDataBuffers*/,
+                                            const std::vector<DecodedThumb>* /*decodedThumbs*/) const {
   // Reserved for future use: tells the carousel whether Home restored a cached frame buffer.
   (void)bufferRestored;
   if (recentBooks.empty()) {

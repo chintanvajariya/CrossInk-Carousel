@@ -1,4 +1,6 @@
 #pragma once
+#include <GfxRenderer.h>
+
 #include <functional>
 #include <vector>
 
@@ -71,6 +73,14 @@ class HomeActivity final : public Activity {
   // large, OOM, etc.) — the theme falls back to file-backed reads in that
   // case. Cap per-entry size with kMaxThumbCacheBytes to bound RAM use.
   std::vector<std::vector<uint8_t>> recentBookThumbData;
+  // Pre-decoded 1-bit pixel grids, indexed parallel to recentBookThumbData.
+  // Each entry is the result of parsing the BMP + unpacking 1-bit pixels into
+  // a flat MSB-first grid. The theme renders directly from the grid via
+  // drawBitmap1BitFromGrid / drawPerspectiveFromGrid, skipping the BMP header
+  // parse + per-row 2-bit-quantization that drawBitmap / drawPerspectiveBitmap
+  // would otherwise pay on every carousel scroll. Empty (invalid()) when decode
+  // failed — the theme falls back to the byte cache or file path in that case.
+  std::vector<DecodedThumb> recentBookDecodedThumbs;
   // Per-thumb cap. Lowered from 32 KB to 24 KB so even a tightly fragmented
   // heap at first-home-enter has a reasonable shot at the contiguous block.
   static constexpr size_t kMaxThumbCacheBytes = 24 * 1024;

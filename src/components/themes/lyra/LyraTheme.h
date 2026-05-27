@@ -78,7 +78,8 @@ class LyraTheme : public BaseTheme {
                            int selectorIndex, bool& coverRendered, bool& coverBufferStored, bool& bufferRestored,
                            const std::function<bool()>& storeCoverBuffer, const BookReadingStats* stats = nullptr,
                            float progressPercent = -1.0f,
-                           const std::vector<std::vector<uint8_t>>* thumbDataBuffers = nullptr) const override;
+                           const std::vector<std::vector<uint8_t>>* thumbDataBuffers = nullptr,
+                           const std::vector<DecodedThumb>* decodedThumbs = nullptr) const override;
   void drawEmptyRecents(const GfxRenderer& renderer, const Rect rect) const;
   Rect drawPopup(const GfxRenderer& renderer, const char* message) const override;
   void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const override;
