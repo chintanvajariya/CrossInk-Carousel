@@ -23,6 +23,10 @@ class HalPowerManager {
   mutable int _batteryCachedPercent = 0;  // Last read battery percentage * 10 (0-1000); callers divide by 10 (ADC/X4
                                           // path only — I2C/X3 path stores 0-100 directly)
   mutable unsigned long _batteryLastPollMs = 0;  // Timestamp of last battery read in milliseconds
+  // True once we've stored a real BQ27220 reading (separate from the 0-default
+  // initial state). Lets the rate-limiter distinguish "first read" from "real
+  // 0% battery" so the user gets the actual percentage on first poll.
+  mutable bool _batterySocInitialized = false;
 
   enum LockMode { None, NormalSpeed };
   LockMode currentLockMode = None;

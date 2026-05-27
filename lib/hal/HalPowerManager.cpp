@@ -116,8 +116,53 @@ uint16_t HalPowerManager::getBatteryPercentage() const {
     }
     const uint8_t lo = Wire.read();
     const uint8_t hi = Wire.read();
-    const uint16_t soc = (hi << 8) | lo;
-    _batteryCachedPercent = soc > 100 ? 100 : soc;
+    const uint16_t rawSoc = (hi << 8) | lo;
+    uint16_t newSoc = rawSoc > 100 ? 100 : rawSoc;
+
+    // Rate-limit + direction-monotonicity to mitigate BQ27220 fuel gauge
+    // miscalibration. The X3's chip is known to snap RSOC to 100% mid-charge
+    // when its FCC estimate is wrong (see crosspoint-reader issues #1444,
+    // #1963 and the TI E2E discussion on bq27220 FCC RAM behavior). Without
+    // smoothing, users see jumps like 27% → 100% in seconds while charging.
+    //
+    // Strategy:
+    //   - While charging (USB connected): only accept INCREASES, capped at
+    //     MAX_DELTA_PER_POLL per 1.5s poll. A genuine 0-100% charge over
+    //     ~90 min stays accurate (2%/poll × 50 polls ≈ 100% over 75s of
+    //     poll budget, but charging real-world is throttled by current).
+    //   - While discharging: only accept DECREASES, capped at the same rate.
+    //     Filters chip-side jitter while still reflecting genuine drain.
+    //
+    // First read is accepted verbatim so the initial display reflects the
+    // chip's reading on boot. `_batterySocInitialized` distinguishes "first
+    // poll ever" from "real reading of 0%."
+    if (_batterySocInitialized) {
+      constexpr int16_t MAX_DELTA_PER_POLL = 2;
+      const bool charging = gpio.isUsbConnected();
+      const int16_t cached = static_cast<int16_t>(_batteryCachedPercent);
+      int16_t adjusted = static_cast<int16_t>(newSoc);
+      const int16_t delta = adjusted - cached;
+      if (charging) {
+        if (delta < 0) {
+          adjusted = cached;  // ignore decreases during charging
+        } else if (delta > MAX_DELTA_PER_POLL) {
+          adjusted = cached + MAX_DELTA_PER_POLL;
+        }
+      } else {
+        if (delta > 0) {
+          adjusted = cached;  // ignore increases during discharge
+        } else if (delta < -MAX_DELTA_PER_POLL) {
+          adjusted = cached - MAX_DELTA_PER_POLL;
+        }
+      }
+      if (adjusted != static_cast<int16_t>(newSoc)) {
+        LOG_DBG("PWR", "Battery smooth: raw=%u cached=%d → %d (delta=%d %s)", newSoc, cached, adjusted, delta,
+                charging ? "chg" : "dis");
+      }
+      newSoc = static_cast<uint16_t>(adjusted);
+    }
+    _batteryCachedPercent = newSoc;
+    _batterySocInitialized = true;
     _batteryLastPollMs = now;
     return _batteryCachedPercent;
   }
