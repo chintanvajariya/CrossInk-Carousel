@@ -47,6 +47,12 @@ class Activity {
   virtual bool allowPowerAsConfirmInReaderMode() const { return false; }
   virtual bool canSnapshotForSleepOverlay() const { return false; }
   virtual ScreenshotInfo getScreenshotInfo() const { return {}; }
+  // Called by ActivityManager::goToSleep when an AUTO-sleep (timeout) is
+  // about to replace this activity. Manual sleeps (user pressed power) do
+  // NOT trigger this. Default no-op; activities that track wall-clock time
+  // (e.g., the reader's session stats) can override to discount the idle
+  // tail before onExit commits the data.
+  virtual void onAutoSleepImminent() {}
 
   // Start a new activity without destroying the current one
   // Note: requestUpdate() will be invoked automatically once resultHandler finishes

@@ -238,6 +238,11 @@ void EpubReaderActivity::onEnter() {
   // Session count and reading time are committed on exit once thresholds are met.
   stats = BookReadingStats::load(epub->getCachePath());
   sessionStartMs = millis();
+  // Initialize lastPageTurnTime so the auto-sleep discount in onExit has a
+  // sensible baseline before the user's first page turn. Without this it
+  // would be 0 (the .h default), making (millis() - lastPageTurnTime) the
+  // entire system uptime — a huge wrong discount.
+  lastPageTurnTime = sessionStartMs;
 
   globalStats = GlobalReadingStats::load();
 
@@ -267,7 +272,21 @@ void EpubReaderActivity::onExit() {
   // Commit session stats based on how long the session lasted.
   // Sessions under 1 minute don't count toward session count or reading time.
   // Sessions under 10 seconds don't add to reading time.
-  const unsigned long elapsedMs = millis() - sessionStartMs;
+  //
+  // Auto-sleep discount: when ActivityManager::goToSleep tells us an
+  // auto-timeout sleep is imminent (autoSleepImminent_ set via
+  // onAutoSleepImminent override), we know the user wasn't actively reading
+  // for the time since the last page turn — the panel was idle long enough
+  // to trigger the timeout. Subtract that tail so it doesn't inflate stats.
+  // For non-auto-sleep exits (back button, app menu, manual sleep) we keep
+  // the original "session start → now" accounting because the user might
+  // have been reading right up to the moment they closed the book.
+  const unsigned long now = millis();
+  unsigned long elapsedMs = now - sessionStartMs;
+  if (autoSleepImminent_) {
+    const unsigned long idleTailMs = now - lastPageTurnTime;
+    elapsedMs = (idleTailMs >= elapsedMs) ? 0UL : (elapsedMs - idleTailMs);
+  }
   if (elapsedMs >= 60000UL) {
     stats.sessionCount++;
     globalStats.totalSessions++;

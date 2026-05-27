@@ -31,6 +31,11 @@ class EpubReaderActivity final : public Activity {
   BookReadingStats stats;
   GlobalReadingStats globalStats;
   unsigned long sessionStartMs = 0UL;
+  // Set by onAutoSleepImminent (called from ActivityManager::goToSleep when
+  // an auto-timeout sleep is about to replace this activity). onExit checks
+  // this and discounts the time since the last page turn from the session
+  // stats — that idle tail is wall-clock time, not reading time.
+  bool autoSleepImminent_ = false;
   // Signals that the next render should reposition within the newly loaded section
   // based on a cross-book percentage jump.
   bool pendingPercentJump = false;
@@ -149,6 +154,7 @@ class EpubReaderActivity final : public Activity {
   void render(RenderLock&& lock) override;
   bool preventAutoSleep() override { return automaticPageTurnActive; }
   bool isReaderActivity() const override { return true; }
+  void onAutoSleepImminent() override { autoSleepImminent_ = true; }
   bool canSnapshotForSleepOverlay() const override { return true; }
   void setAutoPageTurnIntervalSeconds(uint16_t seconds);
   uint16_t getAutoPageTurnIntervalSeconds() const;
