@@ -135,6 +135,20 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
     return;
   }
 
+  // Refresh the side-perspective cache index. The cache survives across
+  // scrolls within a session (recentBooks is stable while the home is open).
+  // When the user opens a book and returns, recentBooks reorders (touched
+  // book moves to front), the fingerprint changes, and the cache is dropped.
+  const std::string sideCacheFingerprint = recentBooks.front().path;
+  if (cachedSideListSize_ != recentBooks.size() || cachedSideListFingerprint_ != sideCacheFingerprint) {
+    cachedSideL_.clear();
+    cachedSideR_.clear();
+    cachedSideL_.resize(recentBooks.size());
+    cachedSideR_.resize(recentBooks.size());
+    cachedSideListSize_ = recentBooks.size();
+    cachedSideListFingerprint_ = sideCacheFingerprint;
+  }
+
   const int pageWidth = renderer.getScreenWidth();
   const int centerX = pageWidth / 2;
   // Cover sits flush to the top of the rect (with a small breathing margin);
@@ -190,15 +204,40 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
     const int drawY = centerY + (centerCoverHeight / 2) - (hMax / 2);
 
     bool drawn = false;
-    // Fastest path: pre-decoded 1-bit grid (decoded once at home enter, no
-    // BMP parse or row-quantization per render).
-    if (const DecodedThumb* grid = decodedGridFor(idx)) {
+    // Side-cover render tiers, ordered fastest → slowest:
+    //  1. Cache hit: blit a pre-rendered perspective bitmap from RAM.
+    //  2. Cache miss + decoded grid: render perspective into the cache, then
+    //     blit. Cache stays warm for the next scroll.
+    //  3. Decoded grid only (cache alloc failed): render perspective directly
+    //     to the framebuffer, no caching.
+    //  4. RAM byte cache: parse BMP, perspective-blit (slow path, no grid).
+    //  5. SD file: open, parse, perspective-blit (slowest, only used when
+    //     the home-enter caching failed entirely).
+    const int sideRowBytes = (sideCoverWidth + 7) / 8;
+    const size_t requiredCacheSize = static_cast<size_t>(sideRowBytes) * static_cast<size_t>(hMax);
+    auto& cacheSlot = isLeft ? cachedSideL_[idx] : cachedSideR_[idx];
+
+    if (cacheSlot.size() == requiredCacheSize) {
+      // Cache hit. Skip the perspective compute entirely.
       renderer.fillRect(drawX, drawY, sideCoverWidth, hMax, false);
-      renderer.drawPerspectiveFromGrid(*grid, drawX, drawY, sideCoverWidth, hL, hR);
+      renderer.drawPackedBitmap(cacheSlot.data(), sideCoverWidth, hMax, drawX, drawY);
       drawn = true;
+    } else if (const DecodedThumb* grid = decodedGridFor(idx)) {
+      // Cache miss with grid available. Try to populate the cache.
+      constexpr size_t kCacheAllocHeadroom = 4 * 1024;
+      if (ESP.getMaxAllocHeap() >= requiredCacheSize + kCacheAllocHeadroom) {
+        cacheSlot.assign(requiredCacheSize, 0);
+        renderer.renderPerspectiveToBuffer(*grid, sideCoverWidth, hL, hR, cacheSlot.data(), cacheSlot.size());
+        renderer.fillRect(drawX, drawY, sideCoverWidth, hMax, false);
+        renderer.drawPackedBitmap(cacheSlot.data(), sideCoverWidth, hMax, drawX, drawY);
+        drawn = true;
+      } else {
+        // Heap too tight to cache. Render directly without caching.
+        renderer.fillRect(drawX, drawY, sideCoverWidth, hMax, false);
+        renderer.drawPerspectiveFromGrid(*grid, drawX, drawY, sideCoverWidth, hL, hR);
+        drawn = true;
+      }
     }
-    // Fast path: RAM-cached thumbnail bytes (slurped at home enter). Used when
-    // the pre-decode didn't fit / failed. Still skips the SD open per render.
     if (!drawn) {
       if (const std::vector<uint8_t>* memBuf = thumbBufferFor(idx)) {
         Bitmap bitmap(memBuf->data(), memBuf->size());

@@ -1,5 +1,9 @@
 #pragma once
 
+#include <cstdint>
+#include <string>
+#include <vector>
+
 #include "components/themes/lyra/LyraTheme.h"
 
 class GfxRenderer;
@@ -66,4 +70,25 @@ class LyraFlowTheme : public LyraTheme {
   mutable int cachedCenterCoverY = 0;
   mutable int cachedActualCoverWidth = 0;
   mutable int cachedActualCoverHeight = 0;
+
+  // Lazy cache of side-cover perspective renders, indexed by recentBooks idx.
+  // L variant: trapezoid that tapers toward the right (used for L-near, L-far
+  //   carousel slots). hL=sideInnerHeight, hR=sideOuterHeight.
+  // R variant: trapezoid that tapers toward the left (used for R-near, R-far).
+  //   hL=sideOuterHeight, hR=sideInnerHeight. Mirror of L.
+  // Each cached entry is a 1-bit packed buffer (MSB-first, byte-aligned rows
+  // of (sideCoverWidth + 7) / 8 bytes, hMax rows). Empty when not yet rendered
+  // or when the cache was invalidated for that book.
+  //
+  // The cache is invalidated when recentBooks changes (detected via size +
+  // first-book-path fingerprint). Within a session, the user typically scrolls
+  // through the same set of recents, so after the first carousel render each
+  // book has its L or R variant cached and subsequent scrolls hit the cache.
+  //
+  // Memory cost: ~3.9 KB per cached entry. With L+R per book × N recent books,
+  // worst case is ~14 KB × N. Bounded by recentBooks.size() (≤18).
+  mutable std::vector<std::vector<uint8_t>> cachedSideL_;
+  mutable std::vector<std::vector<uint8_t>> cachedSideR_;
+  mutable size_t cachedSideListSize_ = 0;
+  mutable std::string cachedSideListFingerprint_;
 };

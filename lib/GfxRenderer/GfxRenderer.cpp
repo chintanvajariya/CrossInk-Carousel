@@ -1582,6 +1582,65 @@ void GfxRenderer::drawPerspectiveFromGrid(const DecodedThumb& grid, const int x,
   }
 }
 
+void GfxRenderer::renderPerspectiveToBuffer(const DecodedThumb& grid, const int w, const int hL, const int hR,
+                                            uint8_t* outBuf, const size_t outBufSize) const {
+  if (!grid.valid() || w <= 0 || hL <= 0 || hR <= 0 || outBuf == nullptr) return;
+  const int hMax = std::max(hL, hR);
+  const int outRowBytes = (w + 7) / 8;
+  if (outBufSize < static_cast<size_t>(outRowBytes) * static_cast<size_t>(hMax)) return;
+
+  const int srcW = grid.width;
+  const int srcH = grid.height;
+
+  // Same loop as drawPerspectiveFromGrid, but the destination is a packed
+  // buffer at (0, 0) instead of the framebuffer at (x, y). The caller is
+  // responsible for pre-zeroing the buffer; we only OR in 1-bits.
+  for (int srcY = 0; srcY < srcH; srcY++) {
+    const int gridRowIdx = grid.topDown ? srcY : (srcH - 1 - srcY);
+    const uint8_t* srcRow = grid.bits.data() + static_cast<size_t>(gridRowIdx) * grid.rowBytes;
+
+    for (int dx = 0; dx < w; dx++) {
+      const int colH = (w == 1) ? hL : (hL + (hR - hL) * dx / (w - 1));
+      if (colH <= 0) continue;
+      const int colTop = (hMax - colH) / 2;
+
+      const int srcX = (dx * srcW) / w;
+      if (!gridBit(srcRow, srcX)) continue;
+
+      const int dstYStart = (gridRowIdx * colH) / srcH;
+      const int dstYEnd = ((gridRowIdx + 1) * colH) / srcH;
+      for (int dy = dstYStart; dy < dstYEnd; ++dy) {
+        const int bufY = colTop + dy;
+        if (bufY < 0 || bufY >= hMax) continue;
+        outBuf[bufY * outRowBytes + (dx / 8)] |= static_cast<uint8_t>(1u << (7 - (dx % 8)));
+      }
+    }
+  }
+}
+
+void GfxRenderer::drawPackedBitmap(const uint8_t* buf, const int bufW, const int bufH, const int x,
+                                   const int y) const {
+  if (buf == nullptr || bufW <= 0 || bufH <= 0) return;
+  const int rowBytes = (bufW + 7) / 8;
+  const int screenW = getScreenWidth();
+  const int screenH = getScreenHeight();
+  uint8_t* fb = frameBuffer;
+
+  for (int by = 0; by < bufH; by++) {
+    const int screenY = y + by;
+    if (screenY < 0) continue;
+    if (screenY >= screenH) break;
+    const uint8_t* srcRow = buf + by * rowBytes;
+    for (int bx = 0; bx < bufW; bx++) {
+      if (!gridBit(srcRow, bx)) continue;
+      const int screenX = x + bx;
+      if (screenX < 0) continue;
+      if (screenX >= screenW) break;
+      writeFramebufferBit(fb, orientation, panelWidth, panelHeight, panelWidthBytes, screenX, screenY, true);
+    }
+  }
+}
+
 void GfxRenderer::fillPolygon(const int* xPoints, const int* yPoints, int numPoints, bool state) const {
   if (numPoints < 3) return;
 

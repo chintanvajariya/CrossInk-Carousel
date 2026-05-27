@@ -210,6 +210,17 @@ class GfxRenderer {
   // from a pre-decoded grid. Same pixel output as the Bitmap variants.
   void drawBitmap1BitFromGrid(const DecodedThumb& grid, int x, int y, int maxWidth, int maxHeight) const;
   void drawPerspectiveFromGrid(const DecodedThumb& grid, int x, int y, int w, int hL, int hR) const;
+  // Same pixel math as drawPerspectiveFromGrid, but the output goes to a
+  // caller-owned 1-bit packed buffer (MSB-first, byte-aligned rows of width
+  // (w + 7) / 8, max(hL, hR) rows) instead of the framebuffer. Used by the
+  // Flow theme to cache side-cover perspective renders. Buffer must be
+  // pre-zeroed by the caller; we OR in 1-bits where the cover pixel is black.
+  void renderPerspectiveToBuffer(const DecodedThumb& grid, int w, int hL, int hR, uint8_t* outBuf,
+                                 size_t outBufSize) const;
+  // Blit a 1-bit packed buffer (same layout as renderPerspectiveToBuffer's
+  // output) to the framebuffer at the given screen position. 1 bits become
+  // black pixels; 0 bits are skipped (background passes through).
+  void drawPackedBitmap(const uint8_t* buf, int bufW, int bufH, int x, int y) const;
   void fillPolygon(const int* xPoints, const int* yPoints, int numPoints, bool state = true) const;
 
   // Text
