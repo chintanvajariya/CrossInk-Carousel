@@ -191,7 +191,13 @@ void BookStatsActivity::render(RenderLock&&) {
     const int authorRawW =
         hasAuthor ? renderer.getTextWidth(UI_12_FONT_ID, currentAuthor.c_str(), EpdFontFamily::REGULAR) : 0;
     const int authorReserved = hasAuthor ? (gap + authorRawW) : 0;
-    const int titleMaxW = std::max(0, budget - authorReserved);
+    // Reserve at least 1/3 of the budget for the title so a very long author
+    // name can't squeeze the title down to 0 px (in which case the author
+    // would visually span the whole row and the title would vanish). Author
+    // gets truncated instead. When the author is short, the title still
+    // expands to fill whatever space the author doesn't use.
+    const int titleMinW = hasAuthor ? (budget / 3) : 0;
+    const int titleMaxW = std::min(budget, std::max(titleMinW, budget - authorReserved));
 
     const std::string truncTitle = renderer.truncatedText(UI_12_FONT_ID, headerTitle, titleMaxW, EpdFontFamily::BOLD);
     const int truncTitleW = renderer.getTextWidth(UI_12_FONT_ID, truncTitle.c_str(), EpdFontFamily::BOLD);

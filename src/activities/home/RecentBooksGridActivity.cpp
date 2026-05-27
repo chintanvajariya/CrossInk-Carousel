@@ -225,7 +225,13 @@ void RecentBooksGridActivity::render(RenderLock&&) {
                                ? 0
                                : renderer.getTextWidth(UI_12_FONT_ID, sel.author.c_str(), EpdFontFamily::REGULAR);
     const int authorReserved = sel.author.empty() ? 0 : (gap + authorRawW);
-    const int titleMaxW = std::max(0, budget - authorReserved);
+    // Reserve at least 1/3 of the budget for the title so a very long author
+    // name can't squeeze the title down to 0 px (in which case the author
+    // would visually span the whole row and the title would vanish). Author
+    // gets truncated instead. When the author is short, the title still
+    // expands to fill whatever space the author doesn't use.
+    const int titleMinW = sel.author.empty() ? 0 : (budget / 3);
+    const int titleMaxW = std::min(budget, std::max(titleMinW, budget - authorReserved));
 
     const std::string truncTitle =
         renderer.truncatedText(UI_12_FONT_ID, sel.title.c_str(), titleMaxW, EpdFontFamily::BOLD);
