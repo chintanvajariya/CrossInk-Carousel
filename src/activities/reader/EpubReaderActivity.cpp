@@ -1075,6 +1075,17 @@ void EpubReaderActivity::executeReaderQuickAction(CrossPointSettings::LONG_PRESS
                                                                                       : CrossPointSettings::TILT_OFF;
         SETTINGS.saveToFile();
         halTiltSensor.clearPendingEvents();
+        // Confirmation popup so the user can tell whether their shortcut
+        // actually fired and which state it ended up in. v1.3.0-era UX
+        // polish — without this, toggling tilt is silent and the user has
+        // to test by tilting the device, which they may not realize was
+        // necessary if they don't know they hit the shortcut.
+        const char* stateText = (SETTINGS.tiltPageTurn == CrossPointSettings::TILT_OFF) ? tr(STR_OFF) : tr(STR_ON);
+        const std::string msg = std::string(tr(STR_TILT_PAGE_TURN)) + ": " + stateText;
+        GUI.drawPopup(renderer, msg.c_str());
+        // Don't requestUpdate — drawPopup already pushed to the panel, and
+        // we want the message to persist until the user's next interaction
+        // (page turn, menu open, etc.), which will naturally re-render.
       }
       break;
     case CrossPointSettings::LONG_MENU_OFF:

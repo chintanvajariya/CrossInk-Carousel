@@ -89,12 +89,16 @@ std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuI
   constexpr size_t baseItemCount = 14;
   const size_t totalItemCount = baseItemCount + (hasFootnotes ? 1u : 0u) + (hasBookmarks ? 2u : 0u);
   items.reserve(totalItemCount);
-  items.push_back({MenuAction::SELECT_CHAPTER, StrId::STR_SELECT_CHAPTER});
-  items.push_back({MenuAction::READER_OPTIONS, StrId::STR_READER_OPTIONS});
-  items.push_back({MenuAction::CONTROLS_OPTIONS, StrId::STR_CAT_CONTROLS});
+  // v1.3.0 polish: Footnotes goes above Select Chapter when present. Books
+  // that use footnote markup tend to be non-fiction where the user dips
+  // into notes far more often than they jump chapters, so this ordering
+  // matches the common task.
   if (hasFootnotes) {
     items.push_back({MenuAction::FOOTNOTES, StrId::STR_FOOTNOTES});
   }
+  items.push_back({MenuAction::SELECT_CHAPTER, StrId::STR_SELECT_CHAPTER});
+  items.push_back({MenuAction::READER_OPTIONS, StrId::STR_READER_OPTIONS});
+  items.push_back({MenuAction::CONTROLS_OPTIONS, StrId::STR_CAT_CONTROLS});
   items.push_back({MenuAction::ROTATE_SCREEN, StrId::STR_ORIENTATION});
   items.push_back({MenuAction::AUTO_PAGE_TURN, StrId::STR_AUTO_TURN_INTERVAL_SECONDS});
   items.push_back({MenuAction::GO_TO_PERCENT, StrId::STR_GO_TO_PERCENT});
