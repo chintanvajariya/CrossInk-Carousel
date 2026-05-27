@@ -613,25 +613,62 @@ void SleepActivity::renderReadingStatsSleepScreen() const {
 }
 
 void SleepActivity::renderQuickResumeSleepScreen() const {
-  // Leave the framebuffer's existing reader-page content intact. Hide the
-  // live battery strip so the saved page doesn't display a stale battery
-  // glance, then drop a small filled circle in the lower-left as an
-  // "asleep" hint. HALF_REFRESH so the panel keeps the image stable; we
-  // turn off the screen afterwards so deep-sleep entry doesn't briefly
-  // re-enable the panel.
+  // Leave the framebuffer's existing reader-page content COMPLETELY intact —
+  // text, status bar, battery, progress bar, chapter title, percent. The
+  // user wants to see exactly the page they were on, including all chrome.
+  // We deliberately don't call hideOverlayBatteryStrip() here (which the
+  // OVERLAY sleep mode uses to wipe the stale battery glance) — Quick Resume
+  // is meant to look like the device just paused, not transitioned.
   if (APP_STATE.lastSleepFromReader) {
     ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
   }
-  hideOverlayBatteryStrip(renderer);
-  // Lower-left moon hint: 16px circle, centered ~16px from the edges. The
-  // GfxRenderer doesn't have a fillCircle primitive — approximate with two
-  // overlapping filled rounded rects so we don't need a new helper or icon
-  // asset. The user will recognize "small dark mark in corner = asleep."
-  constexpr int kHintInset = 14;
-  constexpr int kHintSize = 16;
-  const int hintX = kHintInset;
-  const int hintY = renderer.getScreenHeight() - kHintInset - kHintSize;
-  renderer.fillRoundedRect(hintX, hintY, kHintSize, kHintSize, kHintSize / 2, true, true, true, true, Color::Black);
+
+  // Crescent moon hint in the status bar, just to the left of the book
+  // percent text. The user picks up the device, sees the moon next to their
+  // progress %, knows the device is asleep without losing the rest of the
+  // page context. Position is computed from the same coordinates the
+  // status bar uses for the percent text (BaseTheme::drawStatusBar).
+  //
+  // Crescent is drawn as two filled rounded rects: an outer black disc and
+  // an inner white cutout offset to the upper-right. Resembles the moon
+  // emoji and reads as "sleep" at a small size. Cutout pixels land on
+  // areas that were either background-white or status-bar-chrome; some
+  // chrome could be lightly nicked but the visual still reads as a moon.
+  const int screenWidth = renderer.getScreenWidth();
+  const int screenHeight = renderer.getScreenHeight();
+  int orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft;
+  renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
+                                   &orientedMarginLeft);
+  const int statusBarHeight = UITheme::getInstance().getStatusBarHeight();
+  const int sideInsetRight = orientedMarginRight + SETTINGS.screenMargin;
+  // textY matches BaseTheme::drawStatusBar's percent-text Y. paddingBottom is
+  // 0 in the reader's drawStatusBar call (EpubReaderActivity:1990).
+  const int textY = screenHeight - statusBarHeight - orientedMarginBottom - 4;
+
+  // Estimate the percent-text width so we can land the moon just to its left.
+  // Use "100%" as the representative width — the most common short form. Users
+  // with the "chapter page count" setting on get a wider string ("5/100 50%")
+  // and the moon will land closer to / slightly overlapping the page-count
+  // portion, which still reads as "moon near progress" rather than "moon
+  // floating in the corner."
+  const int percentWidthEst = renderer.getTextWidth(SMALL_FONT_ID, "100%");
+  constexpr int kMoonSize = 16;
+  constexpr int kMoonGap = 6;
+  const int moonX = screenWidth - sideInsetRight - percentWidthEst - kMoonGap - kMoonSize;
+  const int moonY = textY;
+
+  // Outer dark disc.
+  renderer.fillRoundedRect(moonX, moonY, kMoonSize, kMoonSize, kMoonSize / 2, true, true, true, true, Color::Black);
+  // Inner white cutout — offset right and slightly smaller → left-facing crescent
+  // with the gap on the upper-right. The cutout intentionally pokes slightly
+  // outside the disc on the right; those overflow pixels just paint white over
+  // whatever was there (almost always white background already).
+  constexpr int kCutoutSize = 14;
+  constexpr int kCutoutOffsetX = 5;
+  constexpr int kCutoutOffsetY = -1;
+  renderer.fillRoundedRect(moonX + kCutoutOffsetX, moonY + kCutoutOffsetY, kCutoutSize, kCutoutSize, kCutoutSize / 2,
+                           true, true, true, true, Color::White);
+
   renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 }
 

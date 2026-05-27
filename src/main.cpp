@@ -676,18 +676,25 @@ void setup() {
 
   bool quickResumeRestored = false;
   if (wantsQuickResume && loadSleepFrameBuffer()) {
-    // Overlay a small "loading" hint in the lower-left so the user can tell
-    // the device is awake but the EPUB is still re-parsing underneath. Same
-    // position as the sleep moon hint; replacing one with the other is a
-    // recognizable signal. Cleared on first reader render.
-    constexpr int kHintInset = 14;
+    // Loading hint next to the percent text — same coordinates the sleep
+    // moon used, so the user sees one icon transition into the other
+    // when they wake the device. Different shape (ring with hole) so it
+    // visually distinguishes "loading" from the solid crescent "asleep".
+    // Cleared on first reader render.
+    int orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft;
+    renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
+                                     &orientedMarginLeft);
+    const int statusBarHeight = UITheme::getInstance().getStatusBarHeight();
+    const int sideInsetRight = orientedMarginRight + SETTINGS.screenMargin;
+    const int textY = renderer.getScreenHeight() - statusBarHeight - orientedMarginBottom - 4;
+    const int percentWidthEst = renderer.getTextWidth(SMALL_FONT_ID, "100%");
     constexpr int kHintSize = 16;
-    const int hintX = kHintInset;
-    const int hintY = renderer.getScreenHeight() - kHintInset - kHintSize;
-    // Loading hint: small filled circle with a 4px hole in the middle so it
-    // visually differs from the solid moon dot used during sleep.
+    constexpr int kHintGap = 6;
+    const int hintX = renderer.getScreenWidth() - sideInsetRight - percentWidthEst - kHintGap - kHintSize;
+    const int hintY = textY;
+    // Black filled disc + white inner cutout = ring (donut) shape.
     renderer.fillRoundedRect(hintX, hintY, kHintSize, kHintSize, kHintSize / 2, true, true, true, true, Color::Black);
-    renderer.fillRoundedRect(hintX + kHintSize / 2 - 2, hintY + kHintSize / 2 - 2, 4, 4, 2, true, true, true, true,
+    renderer.fillRoundedRect(hintX + kHintSize / 2 - 4, hintY + kHintSize / 2 - 4, 8, 8, 4, true, true, true, true,
                              Color::White);
     // Paint the restored frame back to the panel. Use HALF_REFRESH so the
     // panel transitions cleanly from the off state to the page image. The
