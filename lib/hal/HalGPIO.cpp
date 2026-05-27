@@ -296,6 +296,18 @@ HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
   const bool usbConnected = isUsbConnected();
 
   if (wakeupCause == ESP_SLEEP_WAKEUP_GPIO && resetReason == ESP_RST_DEEPSLEEP) {
+    // X3 quick-resume gotcha: when USB VBUS is applied during a Quick Resume
+    // deep sleep, the controller can issue a fake POWERON-style wake via the
+    // bypass path even though the user didn't press the button. Sanity-check
+    // by sampling the power button pin directly — it's pulled up when idle,
+    // pulled low only by a real press. If USB is connected and the button
+    // isn't actually pressed, route to AfterUSBPower so setup() drops back
+    // to sleep instead of completing a fake boot.
+    // Skipped on X4 because the issue doesn't occur there (different power
+    // routing) and we don't want to add false-negatives on a working device.
+    if (deviceIsX3() && usbConnected && digitalRead(BTN_POWER) == HIGH) {
+      return WakeupReason::AfterUSBPower;
+    }
     return WakeupReason::PowerButton;
   }
   if (wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_POWERON && !usbConnected) {

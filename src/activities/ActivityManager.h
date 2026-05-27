@@ -94,7 +94,11 @@ class ActivityManager {
   void goToRecentBooks();
   void goToBrowser();
   void goToReader(std::string path, bool suppressBackRelease = false);
-  void goToSleep();
+  // `fromTimeout` distinguishes auto-sleep (timeout elapsed in loop()) from
+  // manual sleep (user pressed the power button). SleepActivity uses this to
+  // decide whether Quick Resume should fire — manual sleeps always use the
+  // regular sleep screen so the user gets a battery glance.
+  void goToSleep(bool fromTimeout = false);
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goToCrashReport();

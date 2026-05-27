@@ -343,6 +343,17 @@ bool selectRandomSleepImage(SleepImageMode mode, SleepImageSelection& selection)
 void SleepActivity::onEnter() {
   Activity::onEnter();
 
+  // Quick Resume on auto-sleep: when we're auto-sleeping (timeout fired) from
+  // inside a book and the user has enabled the setting, take the dedicated
+  // path that leaves the reader page on the panel and lets main.cpp dump the
+  // framebuffer for next-boot restoration. Manual power-button sleeps fall
+  // through to the normal sleep screens regardless of this setting so the
+  // user can still glance the cover / wallpaper they configured.
+  if (fromTimeout && APP_STATE.lastSleepFromReader && SETTINGS.quickResumeOnTimeout != 0) {
+    renderQuickResumeSleepScreen();
+    return;
+  }
+
   overlayPageBufferStored = SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::OVERLAY &&
                             APP_STATE.lastSleepFromReader && renderer.storeBwBuffer();
   overlayPageBufferTrusted = overlayPageBufferStored && canSnapshotOverlayBackground;
@@ -598,6 +609,29 @@ void SleepActivity::renderReadingStatsSleepScreen() const {
   }
 
   renderBookStatsView(renderer, nullptr, bookTitle, bookStats, globalStats, false);
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
+}
+
+void SleepActivity::renderQuickResumeSleepScreen() const {
+  // Leave the framebuffer's existing reader-page content intact. Hide the
+  // live battery strip so the saved page doesn't display a stale battery
+  // glance, then drop a small filled circle in the lower-left as an
+  // "asleep" hint. HALF_REFRESH so the panel keeps the image stable; we
+  // turn off the screen afterwards so deep-sleep entry doesn't briefly
+  // re-enable the panel.
+  if (APP_STATE.lastSleepFromReader) {
+    ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
+  }
+  hideOverlayBatteryStrip(renderer);
+  // Lower-left moon hint: 16px circle, centered ~16px from the edges. The
+  // GfxRenderer doesn't have a fillCircle primitive — approximate with two
+  // overlapping filled rounded rects so we don't need a new helper or icon
+  // asset. The user will recognize "small dark mark in corner = asleep."
+  constexpr int kHintInset = 14;
+  constexpr int kHintSize = 16;
+  const int hintX = kHintInset;
+  const int hintY = renderer.getScreenHeight() - kHintInset - kHintSize;
+  renderer.fillRoundedRect(hintX, hintY, kHintSize, kHintSize, kHintSize / 2, true, true, true, true, Color::Black);
   renderer.displayBuffer(HalDisplay::HALF_REFRESH, TURN_OFF_SCREEN_AFTER_SLEEP_REFRESH);
 }
 

@@ -17,8 +17,11 @@ class HalDisplay {
     FAST_REFRESH   // Fast refresh using custom LUT
   };
 
-  // Initialize the display hardware and driver
-  void begin();
+  // Initialize the display hardware and driver. When `seamless` is true, the
+  // wake-time resync is suppressed so the panel's pre-sleep image stays on
+  // screen until the caller writes a fresh framebuffer. Used by Quick Resume
+  // — the saved sleep framebuffer is loaded into the controller after begin().
+  void begin(bool seamless = false);
 
   // Display dimensions
   static constexpr uint16_t DISPLAY_WIDTH = EInkDisplay::DISPLAY_WIDTH;

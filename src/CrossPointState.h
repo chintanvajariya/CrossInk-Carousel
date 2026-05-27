@@ -17,6 +17,13 @@ class CrossPointState {
   uint8_t recentSleepFill = 0;                          // valid entries (0..SLEEP_RECENT_COUNT)
   uint8_t readerActivityLoadCount = 0;
   bool lastSleepFromReader = false;
+  // Quick Resume: when the device sleeps from inside a book with quick resume
+  // enabled, we dump the framebuffer to /.crosspoint/sleep_frame.bin and clear
+  // this flag. On the next boot, setup() reads the saved frame back into the
+  // panel and skips the splash so the user wakes directly on their page. The
+  // flag is reset to true immediately after a successful restore so a hang
+  // during paint can't trap us into a quick-resume loop.
+  bool showBootScreen = true;
 
   // Returns true if idx was shown within the last checkCount picks.
   // Walks backwards from the most recently written slot.

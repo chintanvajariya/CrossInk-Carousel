@@ -12,7 +12,7 @@ HalDisplay::HalDisplay() : einkDisplay(EPD_SCLK, EPD_MOSI, EPD_CS, EPD_DC, EPD_R
 
 HalDisplay::~HalDisplay() {}
 
-void HalDisplay::begin() {
+void HalDisplay::begin(bool seamless) {
   HalSpiBus::Lock spiLock;
 
   // Set X3-specific panel mode before initializing.
@@ -22,7 +22,13 @@ void HalDisplay::begin() {
 
   einkDisplay.begin();
 
-  // Request resync after specific wakeup events to ensure clean display state
+  // Request resync after specific wakeup events to ensure clean display state.
+  // Quick Resume sets `seamless` so the panel keeps the pre-sleep image —
+  // requestResync() would otherwise wipe the controller's display RAM and
+  // force the panel to repaint from scratch, defeating the seamless wake.
+  if (seamless) {
+    return;
+  }
   const auto wakeupReason = gpio.getWakeupReason();
   if (wakeupReason == HalGPIO::WakeupReason::PowerButton || wakeupReason == HalGPIO::WakeupReason::AfterFlash ||
       wakeupReason == HalGPIO::WakeupReason::Other) {

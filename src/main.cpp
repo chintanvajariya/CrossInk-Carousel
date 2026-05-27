@@ -401,16 +401,96 @@ bool handleGlobalPowerButtonAction(const CrossPointSettings::SHORT_PWRBTN action
 
 namespace {
 constexpr uint16_t POST_SLEEP_SCREEN_SETTLE_MS = 500;
+constexpr char QUICK_RESUME_FRAME_PATH[] = "/.crosspoint/sleep_frame.bin";
+
+// Quick Resume: after the SleepActivity has painted the moon hint over the
+// reader page (HALF_REFRESH), dump the framebuffer bytes to SD so the next
+// boot can restore them before the splash runs. Returns true on success.
+//
+// Failure modes (file open fails, short write) leave APP_STATE.showBootScreen
+// at its current value; the next boot won't try to restore a frame it can't
+// trust.
+bool saveSleepFrameBuffer() {
+  FsFile f;
+  if (!Storage.openFileForWrite("QRES", QUICK_RESUME_FRAME_PATH, f)) {
+    LOG_ERR("QRES", "Could not open sleep_frame.bin for write");
+    return false;
+  }
+  const uint32_t bufferSize = display.getBufferSize();
+  uint8_t* fb = display.getFrameBuffer();
+  const size_t written = f.write(fb, bufferSize);
+  f.close();
+  if (written != bufferSize) {
+    LOG_ERR("QRES", "Short write: %u / %u bytes", static_cast<unsigned>(written), static_cast<unsigned>(bufferSize));
+    Storage.remove(QUICK_RESUME_FRAME_PATH);
+    return false;
+  }
+  LOG_DBG("QRES", "Saved %u-byte sleep frame", static_cast<unsigned>(bufferSize));
+  return true;
 }
 
-// Enter deep sleep mode
-void enterDeepSleep() {
+// Quick Resume restore: read the saved framebuffer back into the panel's
+// memory buffer. Always deletes the file afterwards so a crash mid-paint
+// can never cause a stale frame to be restored twice. Returns true if the
+// frame was successfully read and the caller may skip the splash.
+bool loadSleepFrameBuffer() {
+  FsFile f;
+  if (!Storage.openFileForRead("QRES", QUICK_RESUME_FRAME_PATH, f)) {
+    return false;
+  }
+  const uint32_t bufferSize = display.getBufferSize();
+  const size_t fileSize = f.fileSize();
+  if (fileSize != bufferSize) {
+    LOG_ERR("QRES", "Sleep frame size mismatch: %u (file) vs %u (buffer)", static_cast<unsigned>(fileSize),
+            static_cast<unsigned>(bufferSize));
+    f.close();
+    Storage.remove(QUICK_RESUME_FRAME_PATH);
+    return false;
+  }
+  uint8_t* fb = display.getFrameBuffer();
+  const int bytesRead = f.read(fb, bufferSize);
+  f.close();
+  Storage.remove(QUICK_RESUME_FRAME_PATH);
+  if (static_cast<uint32_t>(bytesRead) != bufferSize) {
+    LOG_ERR("QRES", "Sleep frame short read: %d / %u", bytesRead, static_cast<unsigned>(bufferSize));
+    return false;
+  }
+  LOG_DBG("QRES", "Restored %u-byte sleep frame", static_cast<unsigned>(bufferSize));
+  return true;
+}
+
+// Earliest millis() at which auto-sleep is allowed. Set 2 seconds out from
+// boot/wake so a slightly-too-long wake press doesn't immediately re-sleep
+// the device. Quick Resume makes wake fast enough that the user's finger can
+// still be on the button when the loop() guard would otherwise fire sleep.
+unsigned long allowSleepAt = 0;
+}
+
+// Enter deep sleep mode (declared in GlobalActions.h with default arg)
+void enterDeepSleep(bool fromTimeout) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
+
+  // Quick Resume: tag the next boot to skip the splash. Only when the user
+  // has opted in, we're auto-sleeping from inside a book, and the SleepActivity
+  // will run the dedicated path. main.cpp's setup() resets this flag back to
+  // true the moment it restores the frame, so a hang mid-paint can't loop.
+  const bool quickResume =
+      fromTimeout && APP_STATE.lastSleepFromReader && SETTINGS.quickResumeOnTimeout != 0;
+  APP_STATE.showBootScreen = !quickResume;
   APP_STATE.saveToFile();
 
-  activityManager.goToSleep();
+  activityManager.goToSleep(fromTimeout);
   delay(POST_SLEEP_SCREEN_SETTLE_MS);
+
+  // After the sleep screen has painted (and turned the panel off via
+  // displayBuffer's turnOffScreen=true), the framebuffer in MCU RAM still
+  // holds the rendered page. Dump it now so the next boot can restore it.
+  // On failure we clear the flag so the next boot does a normal splash.
+  if (quickResume && !saveSleepFrameBuffer()) {
+    APP_STATE.showBootScreen = true;
+    APP_STATE.saveToFile();
+  }
 
   halTiltSensor.deepSleep();
   display.deepSleep();
@@ -421,8 +501,8 @@ void enterDeepSleep() {
 
 void ensureSdFontLoaded() { sdFontSystem.ensureLoaded(renderer); }
 
-void setupDisplayAndFonts() {
-  display.begin();
+void setupDisplayAndFonts(bool seamless = false) {
+  display.begin(seamless);
   renderer.begin();
   activityManager.begin();
   LOG_DBG("MAIN", "Display initialized");
@@ -529,6 +609,11 @@ void setup() {
   HalSystem::checkPanic();
 
   SETTINGS.loadFromFile();
+  // Quick Resume: load APP_STATE BEFORE display.begin() so we know whether the
+  // last sleep was a quick-resume sleep (showBootScreen == false). The HAL
+  // begin() then runs in seamless mode (skips the wake-time resync) so the
+  // panel keeps the pre-sleep image until we restore the saved framebuffer.
+  APP_STATE.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
@@ -576,11 +661,44 @@ void setup() {
   // First serial output only here to avoid timing inconsistencies for power button press duration verification
   LOG_DBG("MAIN", "Starting CrossPoint version " CROSSPOINT_VERSION);
 
-  setupDisplayAndFonts();
+  // Quick Resume dispatch: when the previous sleep tagged this boot to skip
+  // the splash, init the panel in seamless mode (keeps the pre-sleep image)
+  // and restore the saved framebuffer instead of running goToBoot(). The
+  // showBootScreen flag is reset to true the moment we attempt restore so a
+  // hang mid-paint can't trap us into a quick-resume loop. If restore fails
+  // (file missing/corrupt) we fall through to the normal splash path.
+  const bool wantsQuickResume =
+      !APP_STATE.showBootScreen && SETTINGS.quickResumeOnTimeout != 0 && !APP_STATE.openEpubPath.empty();
+  APP_STATE.showBootScreen = true;  // reset BEFORE restore so a crash here is one-shot
+  APP_STATE.saveToFile();
 
-  activityManager.goToBoot();
+  setupDisplayAndFonts(wantsQuickResume);
 
-  APP_STATE.loadFromFile();
+  bool quickResumeRestored = false;
+  if (wantsQuickResume && loadSleepFrameBuffer()) {
+    // Overlay a small "loading" hint in the lower-left so the user can tell
+    // the device is awake but the EPUB is still re-parsing underneath. Same
+    // position as the sleep moon hint; replacing one with the other is a
+    // recognizable signal. Cleared on first reader render.
+    constexpr int kHintInset = 14;
+    constexpr int kHintSize = 16;
+    const int hintX = kHintInset;
+    const int hintY = renderer.getScreenHeight() - kHintInset - kHintSize;
+    // Loading hint: small filled circle with a 4px hole in the middle so it
+    // visually differs from the solid moon dot used during sleep.
+    renderer.fillRoundedRect(hintX, hintY, kHintSize, kHintSize, kHintSize / 2, true, true, true, true, Color::Black);
+    renderer.fillRoundedRect(hintX + kHintSize / 2 - 2, hintY + kHintSize / 2 - 2, 4, 4, 2, true, true, true, true,
+                             Color::White);
+    // Paint the restored frame back to the panel. Use HALF_REFRESH so the
+    // panel transitions cleanly from the off state to the page image. The
+    // next paint (the reader's first real page render after parse) will pick
+    // up from here without ghosting.
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    quickResumeRestored = true;
+  } else {
+    activityManager.goToBoot();
+  }
+
   RECENT_BOOKS.loadFromFile();
 
   if (recoveryFirmwareMode) {
@@ -606,6 +724,12 @@ void setup() {
 
   // Ensure we're not still holding the power button before leaving setup
   waitForPowerRelease();
+
+  // Quick Resume's wake path is fast enough that a slightly-too-long wake
+  // press would otherwise trip the auto-sleep guard in loop(). Block
+  // auto-sleep for the first 2 seconds post-boot to give the user time to
+  // release the button. Manual power-button sleep bypasses this guard.
+  allowSleepAt = millis() + 2000;
 }
 
 void loop() {
@@ -684,9 +808,16 @@ void loop() {
 #endif
 
   const unsigned long sleepTimeoutMs = SETTINGS.getSleepTimeoutMs();
-  if (millis() - lastActivityTime >= sleepTimeoutMs) {
+  // Quick Resume's wake-to-page is fast enough that the user's finger can
+  // still be on the power button when the auto-sleep timeout fires next.
+  // The allowSleepAt guard (set in setup() to millis() + 2000) blocks
+  // auto-sleep for the first 2 seconds post-wake so we don't immediately
+  // re-sleep the device against the user's gesture. Manual sleeps via the
+  // power button are unaffected — they go through handleGlobalPowerButtonAction
+  // which doesn't consult this guard.
+  if (millis() >= allowSleepAt && millis() - lastActivityTime >= sleepTimeoutMs) {
     LOG_DBG("SLP", "Auto-sleep triggered after %lu ms of inactivity", sleepTimeoutMs);
-    enterDeepSleep();
+    enterDeepSleep(/*fromTimeout=*/true);
     // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
     // In the simulator, deep sleep is a no-op and returns — reset the timer so
     // the main loop does not immediately re-trigger auto-sleep.
