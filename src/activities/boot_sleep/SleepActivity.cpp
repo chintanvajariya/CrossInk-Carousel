@@ -623,39 +623,25 @@ void SleepActivity::renderQuickResumeSleepScreen() const {
     ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
   }
 
-  // Crescent moon hint in the status bar, just to the left of the book
-  // percent text. The user picks up the device, sees the moon next to their
-  // progress %, knows the device is asleep without losing the rest of the
-  // page context. Position is computed from the same coordinates the
-  // status bar uses for the percent text (BaseTheme::drawStatusBar).
+  // Crescent moon hint in the bottom-right corner. Bottom-right is safe
+  // regardless of whether the reader's status bar / chrome is visible —
+  // status-bar text and progress bar don't reach that corner under any
+  // status-bar setting. (Earlier the hint sat next to the percent text,
+  // but if the user has the status bar minimised or off, the hint would
+  // appear floating without context.)
   //
   // Crescent is drawn as two filled rounded rects: an outer black disc and
   // an inner white cutout offset to the upper-right. Resembles the moon
-  // emoji and reads as "sleep" at a small size. Cutout pixels land on
-  // areas that were either background-white or status-bar-chrome; some
-  // chrome could be lightly nicked but the visual still reads as a moon.
+  // emoji and reads as "sleep" at a small size.
   const int screenWidth = renderer.getScreenWidth();
   const int screenHeight = renderer.getScreenHeight();
   int orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft;
   renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
                                    &orientedMarginLeft);
-  const int statusBarHeight = UITheme::getInstance().getStatusBarHeight();
-  const int sideInsetRight = orientedMarginRight + SETTINGS.screenMargin;
-  // textY matches BaseTheme::drawStatusBar's percent-text Y. paddingBottom is
-  // 0 in the reader's drawStatusBar call (EpubReaderActivity:1990).
-  const int textY = screenHeight - statusBarHeight - orientedMarginBottom - 4;
-
-  // Estimate the percent-text width so we can land the moon just to its left.
-  // Use "100%" as the representative width — the most common short form. Users
-  // with the "chapter page count" setting on get a wider string ("5/100 50%")
-  // and the moon will land closer to / slightly overlapping the page-count
-  // portion, which still reads as "moon near progress" rather than "moon
-  // floating in the corner."
-  const int percentWidthEst = renderer.getTextWidth(SMALL_FONT_ID, "100%");
   constexpr int kMoonSize = 16;
-  constexpr int kMoonGap = 6;
-  const int moonX = screenWidth - sideInsetRight - percentWidthEst - kMoonGap - kMoonSize;
-  const int moonY = textY;
+  constexpr int kMoonInset = 14;
+  const int moonX = screenWidth - orientedMarginRight - kMoonInset - kMoonSize;
+  const int moonY = screenHeight - orientedMarginBottom - kMoonInset - kMoonSize;
 
   // Outer dark disc.
   renderer.fillRoundedRect(moonX, moonY, kMoonSize, kMoonSize, kMoonSize / 2, true, true, true, true, Color::Black);

@@ -672,22 +672,18 @@ void setup() {
 
   bool quickResumeRestored = false;
   if (wantsQuickResume && loadSleepFrameBuffer()) {
-    // Loading hint next to the percent text — same coordinates the sleep
-    // moon used, so the user sees one icon transition into the other
-    // when they wake the device. Different shape (ring with hole) so it
-    // visually distinguishes "loading" from the solid crescent "asleep".
-    // Cleared on first reader render.
+    // Loading hint in the bottom-right corner — same position the sleep
+    // moon used, so the user sees one icon transition into the other when
+    // they wake the device. Different shape (ring with hole) so it visually
+    // distinguishes "loading" from the solid crescent "asleep". Cleared on
+    // the first real reader render after the EPUB finishes parsing.
     int orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft;
     renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
                                      &orientedMarginLeft);
-    const int statusBarHeight = UITheme::getInstance().getStatusBarHeight();
-    const int sideInsetRight = orientedMarginRight + SETTINGS.screenMargin;
-    const int textY = renderer.getScreenHeight() - statusBarHeight - orientedMarginBottom - 4;
-    const int percentWidthEst = renderer.getTextWidth(SMALL_FONT_ID, "100%");
     constexpr int kHintSize = 16;
-    constexpr int kHintGap = 6;
-    const int hintX = renderer.getScreenWidth() - sideInsetRight - percentWidthEst - kHintGap - kHintSize;
-    const int hintY = textY;
+    constexpr int kHintInset = 14;
+    const int hintX = renderer.getScreenWidth() - orientedMarginRight - kHintInset - kHintSize;
+    const int hintY = renderer.getScreenHeight() - orientedMarginBottom - kHintInset - kHintSize;
     // Black filled disc + white inner cutout = ring (donut) shape.
     renderer.fillRoundedRect(hintX, hintY, kHintSize, kHintSize, kHintSize / 2, true, true, true, true, Color::Black);
     renderer.fillRoundedRect(hintX + kHintSize / 2 - 4, hintY + kHintSize / 2 - 4, 8, 8, 4, true, true, true, true,
