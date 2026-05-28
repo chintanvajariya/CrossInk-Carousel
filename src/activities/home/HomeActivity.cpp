@@ -1109,7 +1109,11 @@ void HomeActivity::render(RenderLock&&) {
     const char* subtitle = "";
     switch (menuSelectedIndex) {
       case 0:
-        snprintf(subBuf, sizeof(subBuf), "%u books", static_cast<unsigned>(recentBooks.size()));
+        // Use the true RecentBooksStore count, not the visible-window-capped
+        // recentBooks.size() — otherwise the subtitle reads "3 books" or
+        // "5 books" matching the carousel's display cap rather than the
+        // actual number of recent books the user has.
+        snprintf(subBuf, sizeof(subBuf), "%u books", static_cast<unsigned>(RECENT_BOOKS.getCount()));
         subtitle = subBuf;
         break;
       case 1: {

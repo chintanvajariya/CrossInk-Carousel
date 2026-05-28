@@ -29,8 +29,13 @@ constexpr ThemeMetrics values = [] {
                                  // 392-tall thumb at render time. First home enter
                                  // after upgrade will regenerate all thumbs once.
   v.homeCoverTileHeight = 639;
-  v.homeRecentBooksCount = 3;    // 3-cover variant of the iPod carousel: center
-                                 // + 1 side cover each direction.
+  v.homeRecentBooksCount = 5;    // upper bound for both Flow layouts: the
+                                 // 5-cover variant uses all 5; the 3-cover
+                                 // variant ignores idx3 and idx5 at draw time.
+                                 // Keeping the cap at 5 means switching from
+                                 // 3 → 5 instantly fills out all five covers
+                                 // instead of leaving two empty slots until
+                                 // the next home re-enter.
   v.homeTopPadding = 41;         // header height unchanged from X4 — battery icon at
                                  // y+5 doesn't need more vertical room on the wider
                                  // panel, and keeping the header tight preserves
