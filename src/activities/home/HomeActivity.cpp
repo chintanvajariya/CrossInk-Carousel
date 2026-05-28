@@ -640,7 +640,16 @@ void HomeActivity::freeCoverBuffer() {
 }
 
 void HomeActivity::loop() {
-  const int recentCount = static_cast<int>(recentBooks.size());
+  // Cap navigable recents to the visible carousel slot count. We always LOAD
+  // up to homeRecentBooksCount (5 in Flow) so switching layouts is instant,
+  // but in Flow's 3-cover mode the user should only be able to scroll
+  // through the 3 books that are actually drawn — otherwise selectorIndex
+  // would point at a book that's currently invisible. Non-Flow themes and
+  // the 5-cover Flow variant use the full loaded count.
+  const int loadedRecents = static_cast<int>(recentBooks.size());
+  const bool flowThreeCover = (SETTINGS.uiTheme == CrossPointSettings::UI_THEME::LYRA_FLOW) &&
+                              (SETTINGS.flowCarouselSize == CrossPointSettings::CAROUSEL_3);
+  const int recentCount = flowThreeCover ? std::min(loadedRecents, 3) : loadedRecents;
 
   // Minimal theme: front-button hint slots (MENU/BROWSE/SETTINGS/READ) act
   // as direct actions; pressing MENU opens an overlay containing

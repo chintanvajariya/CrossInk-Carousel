@@ -191,7 +191,13 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
   const int centerX = pageWidth / 2;
   const int titleLh = renderer.getLineHeight(UI_12_FONT_ID);
   const int authorLh = renderer.getLineHeight(UI_10_FONT_ID);
-  const int count = static_cast<int>(recentBooks.size());
+  // In 3-cover mode, cap the navigable cycle at 3 so the modulo math (idx2,
+  // idx4) wraps within the 3 most-recent books. HomeActivity matches this
+  // cap so selectorIndex never exceeds the visible range. Books 4+ are still
+  // loaded (for instant switch back to 5-cover) but unreachable from the
+  // carousel in this mode.
+  const int loadedCount = static_cast<int>(recentBooks.size());
+  const int count = layout.fiveCover ? loadedCount : std::min(loadedCount, 3);
 
   // selectorIndex >= count means HomeActivity has navigated past the books and
   // is highlighting a menu item; in that case we keep the carousel visible but
