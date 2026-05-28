@@ -201,13 +201,24 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
   const int hintGutterHeight = isPortraitInverted ? 50 : 0;
   const int contentY = hintGutterHeight;
 
-  // Title
-  const std::string truncTitle =
-      renderer.truncatedText(UI_12_FONT_ID, title.c_str(), contentWidth - 40, EpdFontFamily::BOLD);
-  // Manual centering so we can respect the content gutter.
-  const int titleX =
-      contentX + (contentWidth - renderer.getTextWidth(UI_12_FONT_ID, truncTitle.c_str(), EpdFontFamily::BOLD)) / 2;
-  renderer.drawText(UI_12_FONT_ID, titleX, 15 + contentY, truncTitle.c_str(), true, EpdFontFamily::BOLD);
+  // Title — wraps up to 2 lines for long book titles (v1.3.0 UX polish).
+  // Short titles still fit on a single line and the layout is unchanged;
+  // long titles wrap and we shift the rest of the menu down by one extra
+  // line height so the title remains fully visible instead of getting an
+  // ellipsis at the end.
+  const auto titleLines = renderer.wrappedText(UI_12_FONT_ID, title.c_str(), contentWidth - 40, 2, EpdFontFamily::BOLD);
+  const int titleLineH = renderer.getLineHeight(UI_12_FONT_ID);
+  int titleY = 15 + contentY;
+  for (const auto& line : titleLines) {
+    const int lineW = renderer.getTextWidth(UI_12_FONT_ID, line.c_str(), EpdFontFamily::BOLD);
+    const int lineX = contentX + (contentWidth - lineW) / 2;
+    renderer.drawText(UI_12_FONT_ID, lineX, titleY, line.c_str(), true, EpdFontFamily::BOLD);
+    titleY += titleLineH;
+  }
+  // Extra vertical offset applied to progress + menu start when the title
+  // actually wrapped. Zero for the common single-line case so existing
+  // layouts are byte-identical.
+  const int wrapOffset = (titleLines.size() > 1) ? titleLineH : 0;
 
   // Progress summary
   std::string progressLine;
@@ -216,10 +227,10 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
                    std::to_string(totalPages) + std::string(tr(STR_PAGES_SEPARATOR));
   }
   progressLine += std::string(tr(STR_BOOK_PREFIX)) + std::to_string(bookProgressPercent) + "%";
-  renderer.drawCenteredText(UI_10_FONT_ID, 45, progressLine.c_str());
+  renderer.drawCenteredText(UI_10_FONT_ID, 45 + wrapOffset, progressLine.c_str());
 
   // Menu Items
-  const int startY = 75 + contentY;
+  const int startY = 75 + contentY + wrapOffset;
   constexpr int lineHeight = 30;
 
   for (size_t i = 0; i < menuItems.size(); ++i) {

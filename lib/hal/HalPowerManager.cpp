@@ -155,10 +155,6 @@ uint16_t HalPowerManager::getBatteryPercentage() const {
           adjusted = cached - MAX_DELTA_PER_POLL;
         }
       }
-      if (adjusted != static_cast<int16_t>(newSoc)) {
-        LOG_DBG("PWR", "Battery smooth: raw=%u cached=%d → %d (delta=%d %s)", newSoc, cached, adjusted, delta,
-                charging ? "chg" : "dis");
-      }
       newSoc = static_cast<uint16_t>(adjusted);
     }
     _batteryCachedPercent = newSoc;

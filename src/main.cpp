@@ -413,7 +413,6 @@ constexpr char QUICK_RESUME_FRAME_PATH[] = "/.crosspoint/sleep_frame.bin";
 bool saveSleepFrameBuffer() {
   FsFile f;
   if (!Storage.openFileForWrite("QRES", QUICK_RESUME_FRAME_PATH, f)) {
-    LOG_ERR("QRES", "Could not open sleep_frame.bin for write");
     return false;
   }
   const uint32_t bufferSize = display.getBufferSize();
@@ -421,11 +420,10 @@ bool saveSleepFrameBuffer() {
   const size_t written = f.write(fb, bufferSize);
   f.close();
   if (written != bufferSize) {
-    LOG_ERR("QRES", "Short write: %u / %u bytes", static_cast<unsigned>(written), static_cast<unsigned>(bufferSize));
+    LOG_ERR("QRES", "Short write");
     Storage.remove(QUICK_RESUME_FRAME_PATH);
     return false;
   }
-  LOG_DBG("QRES", "Saved %u-byte sleep frame", static_cast<unsigned>(bufferSize));
   return true;
 }
 
@@ -441,8 +439,7 @@ bool loadSleepFrameBuffer() {
   const uint32_t bufferSize = display.getBufferSize();
   const size_t fileSize = f.fileSize();
   if (fileSize != bufferSize) {
-    LOG_ERR("QRES", "Sleep frame size mismatch: %u (file) vs %u (buffer)", static_cast<unsigned>(fileSize),
-            static_cast<unsigned>(bufferSize));
+    LOG_ERR("QRES", "Sleep frame size mismatch");
     f.close();
     Storage.remove(QUICK_RESUME_FRAME_PATH);
     return false;
@@ -452,10 +449,9 @@ bool loadSleepFrameBuffer() {
   f.close();
   Storage.remove(QUICK_RESUME_FRAME_PATH);
   if (static_cast<uint32_t>(bytesRead) != bufferSize) {
-    LOG_ERR("QRES", "Sleep frame short read: %d / %u", bytesRead, static_cast<unsigned>(bufferSize));
+    LOG_ERR("QRES", "Sleep frame short read");
     return false;
   }
-  LOG_DBG("QRES", "Restored %u-byte sleep frame", static_cast<unsigned>(bufferSize));
   return true;
 }
 
