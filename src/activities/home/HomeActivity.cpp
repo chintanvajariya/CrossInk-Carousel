@@ -1082,8 +1082,13 @@ void HomeActivity::render(RenderLock&&) {
     if (menuSelectedIndex < 0 || menuSelectedIndex >= kHomeMenuCount) return;
     const int rectTop = metrics.homeTopPadding;
     const int rectBottom = rectTop + metrics.homeCoverTileHeight;
-    constexpr int kCoverTopOffset = 48;
-    constexpr int kCenterCoverHeight = 392;
+    // Runtime-branched to match LyraFlowTheme's two carousel layouts. MUST
+    // stay in sync with LAYOUT_3 / LAYOUT_5 in that file. (The cleaner fix
+    // is to expose these via ThemeMetrics so they're a single source of
+    // truth; not done here to keep the change contained.)
+    const bool fiveCoverFlow = SETTINGS.flowCarouselSize == CrossPointSettings::CAROUSEL_5;
+    const int kCoverTopOffset = fiveCoverFlow ? 48 : 28;
+    const int kCenterCoverHeight = fiveCoverFlow ? 392 : 480;
     const int progressBarTopY = rectTop + kCoverTopOffset + kCenterCoverHeight + 8;
     constexpr int kProgressBarVisualHeight = 3;
     const int timeReadY = progressBarTopY + kProgressBarVisualHeight + 6;

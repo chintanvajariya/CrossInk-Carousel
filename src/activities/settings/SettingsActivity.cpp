@@ -61,6 +61,9 @@ void SettingsActivity::rebuildSettingsLists() {
 
   for (const auto& setting : allSettings) {
     if (setting.category == StrId::STR_NONE_OPT || setting.category == StrId::STR_CAT_CONTROLS) continue;
+    // Honor optional visibility predicate so theme-conditional settings (e.g.
+    // Flow's carousel layout) drop out of the menu when irrelevant.
+    if (setting.isVisible && !setting.isVisible()) continue;
     if (setting.category == StrId::STR_CAT_DISPLAY) {
       displaySettings.push_back(setting);
     } else if (setting.category == StrId::STR_CAT_READER) {

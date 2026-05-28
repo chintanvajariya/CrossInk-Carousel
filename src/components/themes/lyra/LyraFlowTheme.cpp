@@ -29,25 +29,46 @@
 #include "fontIds.h"
 
 namespace {
-// X3 carousel: tighter overlap (32 px instead of the X4 base 16) and scaled
-// up so the L-far cover still sits at ~29 px from the screen edge — the
-// stack reads more compact even though every cover is bigger.
-constexpr int centerCoverWidth = 270;
-constexpr int centerCoverHeight = 392;
-constexpr int sideCoverWidth = 82;
-constexpr int sideInnerHeight = 353;
-constexpr int sideOuterHeight = 314;
+// Two carousel layouts the user can switch between via Settings → Display →
+// Carousel Size. Constants are file-scope so they're addressable by the lambda
+// inside drawRecentBookCover; the function picks one at entry by reading
+// SETTINGS.flowCarouselSize. Thumbnails are always generated at the larger
+// (480-px) homeCoverHeight so the 3-cover layout uses them 1:1 and the
+// 5-cover layout simply downscales.
+struct CarouselLayout {
+  int centerW;
+  int centerH;
+  int sideW;
+  int sideInnerH;
+  int sideOuterH;
+  int sideXNear;       // inset for near (or only) side cover
+  int sideXFar;        // inset for far side cover (used only in 5-cover)
+  int coverTopOffset;  // top inset of cover within the carousel rect
+  bool fiveCover;
+};
+constexpr CarouselLayout LAYOUT_3 = {
+    /*centerW*/ 330,
+    /*centerH*/ 480,
+    /*sideW*/ 140,
+    /*sideInnerH*/ 440,
+    /*sideOuterH*/ 390,  // ~12% taper
+    /*sideXNear*/ 29,
+    /*sideXFar*/ 29,  // unused
+    /*coverTopOffset*/ 28,
+    /*fiveCover*/ false,
+};
+constexpr CarouselLayout LAYOUT_5 = {
+    /*centerW*/ 270,
+    /*centerH*/ 392,
+    /*sideW*/ 82,
+    /*sideInnerH*/ 353,
+    /*sideOuterH*/ 314,
+    /*sideXNear*/ 79,
+    /*sideXFar*/ 29,
+    /*coverTopOffset*/ 48,
+    /*fiveCover*/ true,
+};
 constexpr int bookCornerRadius = 6;
-
-// Side-cover x-positions chosen so each adjacent pair (L-far/L-near,
-// L-near/center, R-near/center, R-far/R-near) overlaps by 32 px and the L-far
-// cover starts at x=29 from the left edge. The right-side positions are
-// mirrored from the right screen edge at render time so they stay symmetric
-// across X3 (528 px wide) and X4 (480 px wide).
-constexpr int sideXLeftFar = 29;
-constexpr int sideXLeftNear = 79;
-constexpr int sideXRightEdgeFar = 29;
-constexpr int sideXRightEdgeNear = 79;
 
 // Menu visuals — kept in sync with LyraTheme's anonymous-namespace constants
 // so the Flow override looks identical to the parent's button menu.
@@ -135,11 +156,28 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
     return;
   }
 
-  // Refresh the side-perspective cache index. The cache survives across
-  // scrolls within a session (recentBooks is stable while the home is open).
-  // When the user opens a book and returns, recentBooks reorders (touched
-  // book moves to front), the fingerprint changes, and the cache is dropped.
-  const std::string sideCacheFingerprint = recentBooks.front().path;
+  // Pick the carousel layout for this render. SETTINGS.flowCarouselSize lets
+  // the user toggle between the 3-cover (dominant center) and 5-cover
+  // (original iPod stack) variants from Settings → Display. The local aliases
+  // below shadow the layout fields so the rest of the function reads naturally
+  // without dotting through `layout.X` everywhere.
+  const auto& layout = (SETTINGS.flowCarouselSize == CrossPointSettings::CAROUSEL_5) ? LAYOUT_5 : LAYOUT_3;
+  const int centerCoverWidth = layout.centerW;
+  const int centerCoverHeight = layout.centerH;
+  const int sideCoverWidth = layout.sideW;
+  const int sideInnerHeight = layout.sideInnerH;
+  const int sideOuterHeight = layout.sideOuterH;
+  const int sideXLeftNear = layout.sideXNear;
+  const int sideXRightEdgeNear = layout.sideXNear;
+  const int sideXLeftFar = layout.sideXFar;
+  const int sideXRightEdgeFar = layout.sideXFar;
+  const int kCoverTopOffset = layout.coverTopOffset;
+  // The cache key is per (book_idx, side variant). A layout switch changes
+  // the cached buffer dimensions, so the invalidation has to fire on layout
+  // change too — not just on recentBooks reorder. We tag the fingerprint
+  // with the layout's center width as a poor-man's layout marker.
+  const std::string sideCacheFingerprint =
+      recentBooks.front().path + (layout.fiveCover ? "|5" : "|3");
   if (cachedSideListSize_ != recentBooks.size() || cachedSideListFingerprint_ != sideCacheFingerprint) {
     cachedSideL_.clear();
     cachedSideR_.clear();
@@ -151,13 +189,6 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
 
   const int pageWidth = renderer.getScreenWidth();
   const int centerX = pageWidth / 2;
-  // Cover sits flush to the top of the rect (with a small breathing margin);
-  // title + author now live BELOW the cover, so we no longer need the
-  // text-driven clamp that used to push the cover down to clear text above it.
-  // Cover top offset within the rect. Bumped 8 → 48 to push the carousel
-  // lower and shrink the leftover vertical room around the title/author block
-  // (which is centered inside that leftover space).
-  constexpr int kCoverTopOffset = 48;
   const int titleLh = renderer.getLineHeight(UI_12_FONT_ID);
   const int authorLh = renderer.getLineHeight(UI_10_FONT_ID);
   const int count = static_cast<int>(recentBooks.size());
@@ -196,11 +227,11 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
     const int hR = isLeft ? sideOuterHeight : sideInnerHeight;
     const int hMax = std::max(hL, hR);
     // Right-side positions mirror the left from the screen's right edge so
-    // both sides stay symmetric on X3 (528 px) and X4 (480 px).
+    // both sides stay symmetric on X3 (528 px) and X4 (480 px). isFar picks
+    // between the far inset (5-cover only) and the near inset (both layouts).
     const int rightFarX = pageWidth - sideXRightEdgeFar - sideCoverWidth;
     const int rightNearX = pageWidth - sideXRightEdgeNear - sideCoverWidth;
-    const int drawX = isLeft ? (isFar ? sideXLeftFar : sideXLeftNear)
-                              : (isFar ? rightFarX : rightNearX);
+    const int drawX = isLeft ? (isFar ? sideXLeftFar : sideXLeftNear) : (isFar ? rightFarX : rightNearX);
     const int drawY = centerY + (centerCoverHeight / 2) - (hMax / 2);
 
     bool drawn = false;
@@ -319,13 +350,19 @@ void LyraFlowTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const 
     renderer.fillRect(drawX, drawY + hMax + 1, sideCoverWidth, 2, false);
   };
 
-  const int idx2 = (curIdx + count - 1) % count;  // left-near
-  const int idx3 = (curIdx + count - 2) % count;  // left-far
-  const int idx4 = (curIdx + 1) % count;          // right-near
-  const int idx5 = (curIdx + 2) % count;          // right-far
+  const int idx2 = (curIdx + count - 1) % count;  // left-near (or only left)
+  const int idx4 = (curIdx + 1) % count;          // right-near (or only right)
 
-  if (count >= 5) drawStackedCover(idx3, true, true);
-  if (count >= 4) drawStackedCover(idx5, false, true);
+  // 5-cover mode also draws the L-far and R-far books outside the near pair.
+  // They're drawn first (outside-in) so the center+near can land cleanly on
+  // top of any overlap. 3-cover mode skips this — just the immediate L/R
+  // neighbours are drawn.
+  if (layout.fiveCover) {
+    const int idx3 = (curIdx + count - 2) % count;  // left-far
+    const int idx5 = (curIdx + 2) % count;          // right-far
+    if (count >= 5) drawStackedCover(idx3, true, true);
+    if (count >= 4) drawStackedCover(idx5, false, true);
+  }
   if (count >= 2) drawStackedCover(idx2, true, false);
   if (count >= 3) drawStackedCover(idx4, false, false);
 

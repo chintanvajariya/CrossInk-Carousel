@@ -54,6 +54,11 @@ struct SettingInfo {
   std::function<void(uint8_t)> valueSetter;
   std::function<std::string()> stringGetter;
   std::function<void(const std::string&)> stringSetter;
+  // Optional visibility predicate. When set and returns false, the setting is
+  // hidden from the on-device settings UI. Used to gate theme-specific
+  // options (e.g. Flow carousel layout) behind the relevant theme selection
+  // so the menu doesn't show irrelevant entries for other themes.
+  std::function<bool()> isVisible;
 
   SettingInfo& withObfuscated() {
     obfuscated = true;

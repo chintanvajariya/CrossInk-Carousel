@@ -22,12 +22,15 @@ constexpr ThemeMetrics values = [] {
   // height that aligns to it is 680 − 41 = 639). Centering title/author
   // inside the rect therefore equals centering them between the time row
   // and the menu icon-strip top.
-  v.homeCoverHeight = 392;
+  v.homeCoverHeight = 480;       // matches the 3-cover variant's center cover height.
+                                 // Bumped 392 → 480 so thumbs are generated FRESH
+                                 // from the original EPUB cover at the larger size,
+                                 // giving a sharper image than upscaling the old
+                                 // 392-tall thumb at render time. First home enter
+                                 // after upgrade will regenerate all thumbs once.
   v.homeCoverTileHeight = 639;
-  v.homeRecentBooksCount = 5;    // matches the 5 carousel slots visible at once
-                                 // (center + 2 sides each direction). Capped at 5 to
-                                 // avoid first-boot OOM during sequential thumb gen on
-                                 // ESP32-C3 — see HomeActivity::loadRecentCovers.
+  v.homeRecentBooksCount = 3;    // 3-cover variant of the iPod carousel: center
+                                 // + 1 side cover each direction.
   v.homeTopPadding = 41;         // header height unchanged from X4 — battery icon at
                                  // y+5 doesn't need more vertical room on the wider
                                  // panel, and keeping the header tight preserves
