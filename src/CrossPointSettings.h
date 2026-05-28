@@ -249,12 +249,13 @@ class CrossPointSettings {
   // use the regular sleep-screen setting above. See ActivityManager::goToSleep
   // and main.cpp's BootResume dispatch for the implementation.
   uint8_t quickResumeOnTimeout = 0;
-  // Flow carousel layout: 0 = 3-cover (bigger center, one side cover per
-  // direction), 1 = 5-cover (original iPod stack with near+far on each side).
+  // Flow carousel layout: 0 = 5-cover (original iPod stack with near+far on
+  // each side), 1 = 3-cover (dominant center with one side cover per direction).
   // Read by LyraFlowTheme at render time; the setting is hidden from the
-  // settings UI when uiTheme != LYRA_FLOW.
-  enum FLOW_CAROUSEL_SIZE : uint8_t { CAROUSEL_3 = 0, CAROUSEL_5 = 1, FLOW_CAROUSEL_SIZE_COUNT };
-  uint8_t flowCarouselSize = CAROUSEL_3;
+  // settings UI when uiTheme != LYRA_FLOW. Default is CAROUSEL_5 so existing
+  // users upgrading from prior firmware see the same layout they had before.
+  enum FLOW_CAROUSEL_SIZE : uint8_t { CAROUSEL_5 = 0, CAROUSEL_3 = 1, FLOW_CAROUSEL_SIZE_COUNT };
+  uint8_t flowCarouselSize = CAROUSEL_5;
   // Status bar settings (statusBar retained for migration only)
   uint8_t statusBar = FULL;
   uint8_t statusBarChapterPageCount = 1;

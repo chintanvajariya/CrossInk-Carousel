@@ -120,7 +120,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // only fires for the on-device settings activity).
         [] {
           auto info = SettingInfo::Enum(StrId::STR_CAROUSEL_SIZE, &CrossPointSettings::flowCarouselSize,
-                                        {StrId::STR_THREE, StrId::STR_FIVE}, "flowCarouselSize",
+                                        {StrId::STR_FIVE, StrId::STR_THREE}, "flowCarouselSize",
                                         StrId::STR_CAT_DISPLAY);
           info.isVisible = []() {
             return SETTINGS.uiTheme == CrossPointSettings::UI_THEME::LYRA_FLOW;
