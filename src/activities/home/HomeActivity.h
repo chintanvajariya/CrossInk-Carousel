@@ -96,6 +96,12 @@ class HomeActivity final : public Activity {
   void onBookmarksOpen();
 
   int getMenuItemCount() const;
+  // Visible/navigable recent-books count. Caps at 3 in Flow's 3-cover mode so
+  // selectorIndex math (carousel↔menu transitions, Confirm dispatch, render's
+  // centeredBookIdx) stays consistent — otherwise selectorIndex 3-4 would
+  // resolve as "book index 3/4" in some code paths and "first/second menu
+  // icon" in others. Returns recentBooks.size() in all other configurations.
+  int navigableRecentCount() const;
   bool storeCoverBuffer();    // Store frame buffer for cover image
   bool restoreCoverBuffer();  // Restore frame buffer from stored cover
   void freeCoverBuffer();     // Free the stored cover buffer

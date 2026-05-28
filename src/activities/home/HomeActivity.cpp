@@ -308,9 +308,16 @@ int HomeActivity::getMenuItemCount() const {
   // loop() is the total navigable count (recent books + the 6 menu items).
   int count = 6;
   if (!recentBooks.empty()) {
-    count += recentBooks.size();
+    count += navigableRecentCount();
   }
   return count;
+}
+
+int HomeActivity::navigableRecentCount() const {
+  const int loaded = static_cast<int>(recentBooks.size());
+  const bool flowThreeCover = (SETTINGS.uiTheme == CrossPointSettings::UI_THEME::LYRA_FLOW) &&
+                              (SETTINGS.flowCarouselSize == CrossPointSettings::CAROUSEL_3);
+  return flowThreeCover ? std::min(loaded, 3) : loaded;
 }
 
 void HomeActivity::loadRecentBooks(int maxBooks) {
@@ -640,16 +647,11 @@ void HomeActivity::freeCoverBuffer() {
 }
 
 void HomeActivity::loop() {
-  // Cap navigable recents to the visible carousel slot count. We always LOAD
-  // up to homeRecentBooksCount (5 in Flow) so switching layouts is instant,
-  // but in Flow's 3-cover mode the user should only be able to scroll
-  // through the 3 books that are actually drawn — otherwise selectorIndex
-  // would point at a book that's currently invisible. Non-Flow themes and
-  // the 5-cover Flow variant use the full loaded count.
-  const int loadedRecents = static_cast<int>(recentBooks.size());
-  const bool flowThreeCover = (SETTINGS.uiTheme == CrossPointSettings::UI_THEME::LYRA_FLOW) &&
-                              (SETTINGS.flowCarouselSize == CrossPointSettings::CAROUSEL_3);
-  const int recentCount = flowThreeCover ? std::min(loadedRecents, 3) : loadedRecents;
+  // Use navigableRecentCount() so the cap applied here matches the cap used
+  // in Confirm dispatch and render — otherwise selectorIndex past the
+  // visible carousel slots would resolve as a book in some paths and a menu
+  // icon in others, breaking bottom-rocker navigation in Flow's 3-cover mode.
+  const int recentCount = navigableRecentCount();
 
   // Minimal theme: front-button hint slots (MENU/BROWSE/SETTINGS/READ) act
   // as direct actions; pressing MENU opens an overlay containing
@@ -881,8 +883,9 @@ void HomeActivity::loop() {
     // — it shows the OPDS browser when the user has any servers configured
     // (kHomeMenuItems mirrors this), otherwise it opens Bookmarks. Default
     // is Bookmarks.
-    const int menuIdx = static_cast<int>(selectorIndex) - static_cast<int>(recentBooks.size());
-    if (selectorIndex < recentBooks.size()) {
+    const int navRecent = navigableRecentCount();
+    const int menuIdx = static_cast<int>(selectorIndex) - navRecent;
+    if (static_cast<int>(selectorIndex) < navRecent) {
       onSelectBook(recentBooks[selectorIndex].path);
     } else {
       switch (menuIdx) {
@@ -910,7 +913,10 @@ void HomeActivity::render(RenderLock&&) {
   // mode-invariant index here means the cover-buffer cache key doesn't flip
   // when the cursor crosses between the two — toggling carousel↔menu
   // preserves the cache, and the carousel area doesn't repaint.
-  const int recentCountInt = static_cast<int>(recentBooks.size());
+  // Use navigableRecentCount() to match loop() and Confirm dispatch — in
+  // Flow 3-cover mode the cap differs from recentBooks.size() and the menu /
+  // carousel boundary moves with it.
+  const int recentCountInt = navigableRecentCount();
   const bool inMenuForCarousel = static_cast<int>(selectorIndex) >= recentCountInt;
   const int centeredBookIdx =
       (inMenuForCarousel && lastBookIndex >= 0 && lastBookIndex < recentCountInt)
@@ -1001,8 +1007,10 @@ void HomeActivity::render(RenderLock&&) {
                           std::bind(&HomeActivity::storeCoverBuffer, this), centeredBookStats,
                           centeredBookProgress, &recentBookThumbData, &recentBookDecodedThumbs);
 
-  const int menuSelectedIndex =
-      (selectorIndex >= recentBooks.size()) ? static_cast<int>(selectorIndex - recentBooks.size()) : -1;
+  const int navRecentForMenu = navigableRecentCount();
+  const int menuSelectedIndex = (static_cast<int>(selectorIndex) >= navRecentForMenu)
+                                    ? static_cast<int>(selectorIndex) - navRecentForMenu
+                                    : -1;
 
   if (isMinimalTheme()) {
     // Upstream Minimal home: 4 front-button-mapped hint slots at the bottom
